@@ -20,7 +20,7 @@ import requests
 import yfinance as yf
 
 # ===================== الإعدادات =====================
-SYMBOLS = {
+BACKTEST_SYMBOLS = {  # قائمة ثابتة للاختبار التاريخي فقط؛ المسح الحي ديناميكي من سهمك
     # قائمة تجريبية ثابتة من 50 سهماً؛ لا تمثل ترتيباً يومياً للسيولة.
     "2222": "أرامكو", "1120": "الراجحي", "1180": "الأهلي", "1150": "الإنماء",
     "2010": "سابك", "7010": "stc", "1211": "معادن", "2280": "المراعي",
@@ -39,11 +39,13 @@ SYMBOLS = {
     "4200": "الدريس", "4210": "الأبحاث والإعلام", "4240": "سابتكو",
     "4260": "بدجت السعودية", "4300": "دار الأركان", "7020": "موبايلي",
 }
+
 CAPITAL = 1000                 # رأس المال بالريال
 RISK_PER_TRADE = 0.01          # حد الخطر الاسمي لكل إشارة قبل توزيع السقف الإجمالي
 MAX_TOTAL_RISK = CAPITAL * 0.01  # إجمالي الخطر الأقصى لجميع الإشارات: 10 ريالات
 MAX_TOTAL_POSITION = CAPITAL   # إجمالي تكلفة المراكز المقترحة لا يتجاوز 1,000 ريال
 MAX_POSITION = 0.20            # حد إضافي للمركز الواحد: 20% من رأس المال
+SCAN_SIZE = 50              # أعلى 50 سهماً حسب قيمة التداول اليومية من سهمك
 MAX_SIGNALS = 3                 # أقصى عدد فرص مرسلة بعد ترتيب المرشحين حسب قيمة التداول
 MIN_SCAN_COVERAGE = 0.80         # لا نرسل نتائج إذا تعذر التحقق من 80% من القائمة
 ATR_STOP_MULT = 2.0            # وقف الخسارة = 2 × ATR
@@ -69,6 +71,7 @@ SAHMK_MAX_RETRIES = int(os.getenv("SAHMK_MAX_RETRIES", "2"))
 _SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
 MARKET_AUDIT = []
+MARKET_UNIVERSE_CONTEXT = None
 
 
 class DataValidationError(RuntimeError):
@@ -267,6 +270,82 @@ def fetch_sahmk_review_quote(code: str, now: datetime) -> dict:
     validate_review_quote_timestamp(updated_at, now, f"{code} من سهمك")
     return {"price": price, "updated_at": updated_at,
             "is_delayed": _sahmk_delayed(data, envelope)}
+
+
+def fetch_sahmk_top_value_symbols(expected_date=None, review_now: datetime | None = None) -> dict:
+    """Fetch and validate the current top 50 TASI equities by traded value (SAR)."""
+    global MARKET_UNIVERSE_CONTEXT
+    payload = sahmk_get("market/value/", params={"limit": SCAN_SIZE, "index": "TASI"})
+    data, envelope = _sahmk_response_data(payload)
+
+    market = data.get("index") or envelope.get("index")
+    if market and str(market).upper() != "TASI":
+        raise DataValidationError(f"سهمك: مسار قيمة التداول أعاد السوق {market} بدلاً من TASI.")
+
+    rows = data.get("stocks")
+    if not isinstance(rows, list):
+        raise DataValidationError("سهمك: استجابة أعلى الأسهم قيمةً لا تحتوي قائمة stocks موثقة.")
+    if len(rows) < SCAN_SIZE:
+        raise DataValidationError(
+            f"سهمك: أعاد مسار أعلى الأسهم قيمةً {len(rows)} سهماً فقط؛ نحتاج {SCAN_SIZE}."
+        )
+
+    shared_timestamp = _sahmk_timestamp(data, envelope)
+    delayed_value = data.get("is_delayed", envelope.get("is_delayed"))
+    delayed = True if delayed_value is None else bool(delayed_value)
+    ranked = []
+    seen = set()
+    timestamps = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("symbol") or "").strip()
+        if not re.fullmatch(r"\\d{4}", code):
+            continue
+        if code in seen:
+            raise DataValidationError(f"سهمك: رمز مكرر في قائمة أعلى قيمة تداول: {code}.")
+        try:
+            traded_value = float(row.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not pd.notna(traded_value) or traded_value <= 0:
+            continue
+
+        raw_timestamp = row.get("updated_at") or shared_timestamp
+        if not raw_timestamp:
+            raise DataValidationError(f"سهمك: لا يوجد وقت تحديث موثوق للسهم {code} في قائمة السيولة.")
+        timestamp = _saudi_timestamp(raw_timestamp)
+        if review_now is not None:
+            validate_review_quote_timestamp(timestamp, review_now, f"قائمة السيولة للسهم {code}")
+        else:
+            if expected_date is None:
+                raise DataValidationError("يلزم تحديد تاريخ الجلسة للتحقق من قائمة السيولة بعد الإغلاق.")
+            validate_post_close_timestamp(timestamp, f"قائمة السيولة للسهم {code}", expected_date)
+
+        name = str(row.get("name") or row.get("name_ar") or code).strip()
+        ranked.append((code, name, traded_value, timestamp))
+        seen.add(code)
+        timestamps.append(timestamp)
+
+    if len(ranked) < SCAN_SIZE:
+        raise DataValidationError(
+            f"سهمك: بعد التحقق من الرموز وقيم التداول والتوقيت، بقي {len(ranked)} سهماً فقط من أصل {SCAN_SIZE}."
+        )
+
+    ranked.sort(key=lambda item: (-item[2], item[0]))
+    top = ranked[:SCAN_SIZE]
+    if len({item[0] for item in top}) != SCAN_SIZE:
+        raise DataValidationError("سهمك: تعذر تكوين 50 رمزاً فريداً لقائمة السيولة.")
+
+    MARKET_UNIVERSE_CONTEXT = {
+        "source": "SAHMK /market/value/",
+        "count": len(top),
+        "timestamp": min(item[3] for item in top),
+        "is_delayed": delayed,
+        "ranking": "قيمة التداول بالريال السعودي",
+    }
+    return {code: name for code, name, _, _ in top}
 
 
 def fetch_sahmk_market_summary(expected_date) -> dict:
@@ -496,9 +575,11 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
     candidates = []
     expected = latest_expected_session(local)
-    global MARKET_CONTEXT, MARKET_AUDIT
+    global MARKET_CONTEXT, MARKET_AUDIT, MARKET_UNIVERSE_CONTEXT
     MARKET_AUDIT = []
-    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(SYMBOLS)} أسهم.")
+    active_symbols = fetch_sahmk_top_value_symbols(expected_date=expected)
+    print(f"[قائمة المسح] أعلى {len(active_symbols)} سهماً في تاسي حسب قيمة التداول؛ المصدر سهمك.")
+    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(active_symbols)} سهماً.")
     MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
     MARKET_AUDIT.append({
         "label": "تاسي", "timestamp": MARKET_CONTEXT["timestamp"],
@@ -509,7 +590,7 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
         f"| {'متأخرة' if MARKET_CONTEXT['is_delayed'] else 'لحظية'}"
     )
 
-    for code, name in SYMBOLS.items():
+    for code, name in active_symbols.items():
         try:
             # OHLCV من Yahoo لكل القائمة؛ نطلب سعر سهمك فقط للأسهم التي اجتازت الفحص الفني.
             df = fetch(code, "1y")
@@ -563,8 +644,8 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
             print(f"[تدقيق البيانات] {name} ({code}): FAILED | {exc}")
 
     stock_records = [item for item in MARKET_AUDIT if item["label"] != "تاسي"]
-    scan_coverage = sum(item["status"] == "OK" for item in stock_records) / max(1, len(SYMBOLS))
-    print(f"[مسح السوق] تغطية بيانات الأسهم: {scan_coverage:.0%} ({len(stock_records)}/{len(SYMBOLS)}).")
+    scan_coverage = sum(item["status"] == "OK" for item in stock_records) / max(1, len(active_symbols))
+    print(f"[مسح السوق] تغطية بيانات الأسهم: {scan_coverage:.0%} ({len(stock_records)}/{len(active_symbols)}).")
     if scan_coverage < MIN_SCAN_COVERAGE:
         print_market_audit()
         raise DataValidationError(
@@ -592,7 +673,8 @@ def review_next_session(now: datetime | None = None) -> str:
     candidates = []
     diagnostics = []
     scan_ok = 0
-    for code, name in SYMBOLS.items():
+    active_symbols = fetch_sahmk_top_value_symbols(review_now=local)
+    for code, name in active_symbols.items():
         try:
             df = fetch(code, "1y")
             completed = df[[pd.Timestamp(index).date() <= expected for index in df.index]]
@@ -619,7 +701,7 @@ def review_next_session(now: datetime | None = None) -> str:
         except Exception as exc:
             diagnostics.append(f"• {name} ({code}): تعذر التحقق من البيانات ({exc})")
 
-    scan_coverage = scan_ok / max(1, len(SYMBOLS))
+    scan_coverage = scan_ok / max(1, len(active_symbols))
     if scan_coverage < MIN_SCAN_COVERAGE:
         raise DataValidationError(
             f"تغطية مراجعة السوق {scan_coverage:.0%} أقل من الحد الأدنى {MIN_SCAN_COVERAGE:.0%}؛ أوقفنا المراجعة."
@@ -631,6 +713,7 @@ def review_next_session(now: datetime | None = None) -> str:
         f"مرجع التحليل: إغلاق جلسة {expected}",
         "تنبيه: تأخر الأسعار 15 دقيقة؛ قراءة 10:15 تعكس تقريباً السوق حتى 10:00.",
         "هذه مراجعة سعرية فقط؛ القرار والتنفيذ يدويان، ولا توجد أوامر آلية.",
+        f"قائمة المسح: أعلى {SCAN_SIZE} سهم بقيمة التداول في تاسي من سهمك؛ وقت البيانات الأقدم: {MARKET_UNIVERSE_CONTEXT['timestamp'].strftime('%Y-%m-%d %H:%M %Z')} ({'متأخرة' if MARKET_UNIVERSE_CONTEXT['is_delayed'] else 'غير مصنفة كتأخير'}).",
         "",
     ]
     if not allocated:
@@ -666,7 +749,7 @@ def print_market_audit() -> None:
     records = MARKET_AUDIT or []
     ok = sum(item["status"] == "OK" for item in records)
     failed = sum(item["status"] != "OK" for item in records)
-    print(f"[تدقيق البيانات] الملخص: {ok}/{len(SYMBOLS) + 1} ناجح | {failed} فاشل (تاسي + {len(SYMBOLS)} سهماً).")
+    print(f"[تدقيق البيانات] الملخص: {ok}/{len(records)} ناجح | {failed} فاشل (تاسي + {max(0, len(records) - 1)} سهماً).")
     for item in records:
         stamp = item["timestamp"]
         stamp_text = stamp.strftime("%Y-%m-%d %H:%M %Z") if stamp is not None else "لا يوجد"
@@ -687,7 +770,7 @@ def format_message(signals: list[dict]) -> str:
         )
     audit = MARKET_AUDIT or []
     verified = sum(item["status"] == "OK" for item in audit)
-    coverage_line = f"تغطية المسح: {verified}/{len(SYMBOLS) + 1} (تاسي + {len(SYMBOLS)} سهماً) | حد التغطية الأدنى: {MIN_SCAN_COVERAGE:.0%}"
+    coverage_line = f"تغطية المسح: {verified}/{len(audit)} (تاسي + {max(0, len(audit) - 1)} سهماً) | حد التغطية الأدنى: {MIN_SCAN_COVERAGE:.0%}"
     diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
     diagnostics.extend(
         f"• {item['label']}: تعذر التحقق — {item.get('error', 'سبب غير محدد')}"
@@ -702,7 +785,7 @@ def format_message(signals: list[dict]) -> str:
                 "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, coverage_line,
+    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, universe_line, coverage_line,
              f"(تحليل إغلاق جلسة {signals[0]['date']}؛ المؤشرات من Yahoo وسعر المرجع من سهمك)", ""]
     for s in signals:
         lines += [
@@ -950,7 +1033,7 @@ def _benchmark_return(index_df: pd.DataFrame, start, end) -> tuple[float, object
 
 def run_backtest(now: datetime | None = None) -> None:
     datasets = {}
-    for code in SYMBOLS:
+    for code in BACKTEST_SYMBOLS:
         raw = fetch(code, "5y")
         validate_session_data(raw, code, now)
         indicators = add_indicators(raw).dropna()
