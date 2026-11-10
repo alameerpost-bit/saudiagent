@@ -8,6 +8,7 @@
     python bot.py daemon     # انتظار وقت الإرسال اليومي (16:00 بتوقيت الرياض)
 """
 import os
+import re
 import sys
 import time
 from datetime import datetime, time as time_of_day, timedelta
@@ -39,6 +40,15 @@ TASI_SYMBOL = "^TASI.SR"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SAHMK_API_KEY = os.getenv("SAHMK_API_KEY")
+SAHMK_BASE_URL = os.getenv("SAHMK_BASE_URL", "https://api.sahmk.sa/api/v1")
+SAHMK_TIMEOUT = 20
+# سهمك يفرض حدوداً على معدل الطلبات؛ نباعد بين طلبات الأسهم لتقليل HTTP 429.
+SAHMK_MIN_REQUEST_INTERVAL = float(os.getenv("SAHMK_MIN_REQUEST_INTERVAL", "6"))
+SAHMK_MAX_RETRIES = int(os.getenv("SAHMK_MAX_RETRIES", "2"))
+_SAHMK_LAST_REQUEST_AT = None
+MARKET_CONTEXT = None
+MARKET_AUDIT = []
 
 
 class DataValidationError(RuntimeError):
@@ -47,6 +57,182 @@ class DataValidationError(RuntimeError):
 
 class SignalAllocationError(RuntimeError):
     """توجد إشارات فنية لكن لا يمكن تخصيص سهم واحد لها ضمن القيود."""
+
+
+def _sahmk_wait_for_request_slot() -> None:
+    """فرض فاصل أدنى بين طلبات سهمك ضمن عملية التشغيل الواحدة."""
+    global _SAHMK_LAST_REQUEST_AT
+    now = time.monotonic()
+    if _SAHMK_LAST_REQUEST_AT is not None:
+        remaining = SAHMK_MIN_REQUEST_INTERVAL - (now - _SAHMK_LAST_REQUEST_AT)
+        if remaining > 0:
+            time.sleep(remaining)
+    _SAHMK_LAST_REQUEST_AT = time.monotonic()
+
+
+def _sahmk_retry_delay(response, payload) -> float:
+    """استخراج مهلة إعادة المحاولة من Retry-After أو رسالة سهمك."""
+    headers = getattr(response, "headers", {}) or {}
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            pass
+    message = str(payload or "")
+    match = re.search(r"(?:available|retry|wait)\s+in\s+(\d+(?:\\.\d+)?)\s+seconds?", message, re.I)
+    if match:
+        return max(0.0, float(match.group(1)))
+    return 2.0
+
+
+def sahmk_get(path: str, params: dict | None = None) -> dict:
+    """طلب موثق من سهمك مع تنظيم المعدل وإعادة محاولة 429؛ لا ننتقل إلى Yahoo عند فشل المصدر الأساسي."""
+    if not SAHMK_API_KEY:
+        raise DataValidationError("مفتاح SAHMK_API_KEY غير مضبوط في GitHub Secrets.")
+
+    response = None
+    for attempt in range(SAHMK_MAX_RETRIES + 1):
+        _sahmk_wait_for_request_slot()
+        try:
+            response = requests.get(
+                f"{SAHMK_BASE_URL.rstrip('/')}/{path.lstrip('/')}",
+                headers={"X-API-Key": SAHMK_API_KEY},
+                params=params,
+                timeout=SAHMK_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            raise DataValidationError(f"سهمك: تعذر جلب {path} (HTTP {status or 'network'}): {exc}") from exc
+
+        if getattr(response, "status_code", None) == 429 and attempt < SAHMK_MAX_RETRIES:
+            try:
+                rate_payload = response.json()
+            except (TypeError, ValueError):
+                rate_payload = None
+            delay = _sahmk_retry_delay(response, rate_payload)
+            print(
+                f"[سهمك] حد الطلبات لطلب {path}؛ إعادة المحاولة بعد {delay:g} ثانية "
+                f"({attempt + 1}/{SAHMK_MAX_RETRIES})."
+            )
+            time.sleep(delay)
+            continue
+        break
+
+    status = getattr(response, "status_code", None)
+    try:
+        # Decode first: SAHMK returns useful error.code/error.message JSON on
+        # non-2xx responses, which raise_for_status() would otherwise discard.
+        payload = response.json()
+    except (TypeError, ValueError) as exc:
+        if status is not None and status >= 400:
+            raise DataValidationError(
+                f"سهمك: تعذر جلب {path} (HTTP {status}): استجابة خطأ غير صالحة كـ JSON."
+            ) from exc
+        raise DataValidationError(f"سهمك: استجابة غير صالحة من {path}.") from exc
+
+    if not isinstance(payload, dict):
+        raise DataValidationError(f"سهمك: تنسيق استجابة غير متوقع من {path}.")
+    error = payload.get("error")
+    if (status is not None and status >= 400) or error:
+        if isinstance(error, dict):
+            details = [
+                str(value)
+                for value in (error.get("code"), error.get("message"))
+                if value
+            ]
+            detail = ": ".join(details)
+        else:
+            detail = str(error) if error else ""
+        fallback = payload.get("detail")
+        if fallback and str(fallback) not in detail:
+            detail = f"{detail}: {fallback}" if detail else str(fallback)
+        detail = detail or "استجابة خطأ من الواجهة."
+        status_text = f"HTTP {status}" if status is not None else "خطأ"
+        raise DataValidationError(f"سهمك: تعذر جلب {path} ({status_text}): {detail}")
+    return payload
+
+
+def _saudi_timestamp(value) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize(TZ)
+    return timestamp.tz_convert(TZ)
+
+
+def _sahmk_response_data(payload: dict) -> tuple[dict, dict]:
+    """Return the data object and its envelope for both flat and wrapped API responses."""
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        return nested, payload
+    return payload, payload
+
+
+def _sahmk_timestamp(data: dict, envelope: dict):
+    # Prefer the market-data timestamp. retrievedAt is deliberately not used:
+    # it can be the proxy retrieval time rather than the exchange quote time.
+    return data.get("timestamp") or data.get("updated_at") or envelope.get("timestamp")
+
+
+def _sahmk_delayed(data: dict, envelope: dict) -> bool:
+    value = data.get("is_delayed")
+    if value is None:
+        value = envelope.get("is_delayed")
+    # Fail closed: an unspecified delay flag must never be presented as realtime.
+    return True if value is None else bool(value)
+
+
+def fetch_sahmk_quote(code: str, expected_date) -> dict:
+    """السعر الأساسي للإشارة من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
+    payload = sahmk_get(f"quote/{code}/")
+    data, envelope = _sahmk_response_data(payload)
+    price = data.get("price")
+    updated = _sahmk_timestamp(data, envelope)
+    if price is None or not updated:
+        raise DataValidationError(
+            f"{code}: استجابة سهمك لا تحتوي price ووقت تحديث السوق (timestamp/updated_at)."
+        )
+    try:
+        updated_at = _saudi_timestamp(updated)
+        price = float(price)
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(f"{code}: سعر أو توقيت سهمك غير صالح.") from exc
+    if not pd.notna(price) or price <= 0:
+        raise DataValidationError(f"{code}: سعر سهمك غير صالح.")
+    if updated_at.date() != expected_date:
+        raise DataValidationError(
+            f"{code}: آخر تحديث من سهمك {updated_at.date()} وليس جلسة {expected_date}؛ أوقفنا الإشارات."
+        )
+    return {
+        "price": price,
+        "updated_at": updated_at,
+        "is_delayed": _sahmk_delayed(data, envelope),
+    }
+
+
+def fetch_sahmk_market_summary(expected_date) -> dict:
+    """ملخص تاسي من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
+    payload = sahmk_get("market/summary/", params={"index": "TASI"})
+    data, envelope = _sahmk_response_data(payload)
+    updated = _sahmk_timestamp(data, envelope)
+    if not updated:
+        raise DataValidationError("تاسي: سهمك لم يرجع timestamp أو updated_at لوقت بيانات السوق.")
+    try:
+        updated_at = _saudi_timestamp(updated)
+        index_value = float(data["index_value"])
+        change_pct = float(data["index_change_percent"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataValidationError("تاسي: استجابة سهمك ناقصة أو غير صالحة.") from exc
+    if updated_at.date() != expected_date:
+        raise DataValidationError(
+            f"تاسي: آخر تحديث من سهمك {updated_at.date()} وليس جلسة {expected_date}؛ أوقفنا الإشارات."
+        )
+    return {
+        "index_value": index_value,
+        "change_percent": change_pct,
+        "timestamp": updated_at,
+        "is_delayed": _sahmk_delayed(data, envelope),
+    }
 
 
 # ===================== البيانات والمؤشرات =====================
@@ -89,7 +275,7 @@ def validate_session_data(df: pd.DataFrame, code: str,
 def fetch(code: str, period: str = "2y") -> pd.DataFrame:
     symbol = code if code.startswith("^") else f"{code}.SR"
     try:
-        df = yf.Ticker(symbol).history(period=period, auto_adjust=True)
+        df = yf.Ticker(symbol).history(period=period, auto_adjust=False)
     except Exception as exc:
         raise DataValidationError(f"{code}: تعذر جلب البيانات: {exc}") from exc
     if df is None or df.empty:
@@ -229,25 +415,64 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
     candidates = []
     expected = latest_expected_session(local)
+    global MARKET_CONTEXT, MARKET_AUDIT
+    MARKET_AUDIT = []
+    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(SYMBOLS)} أسهم.")
+    MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
+    MARKET_AUDIT.append({
+        "label": "تاسي", "timestamp": MARKET_CONTEXT["timestamp"],
+        "delayed": MARKET_CONTEXT["is_delayed"], "status": "OK",
+    })
+    print(
+        f"[تدقيق البيانات] تاسي: OK | {MARKET_CONTEXT['timestamp'].strftime('%Y-%m-%d %H:%M %Z')} "
+        f"| {'متأخرة' if MARKET_CONTEXT['is_delayed'] else 'لحظية'}"
+    )
+
     for code, name in SYMBOLS.items():
-        # أي خطأ أو نقص في رمز واحد يوقف العملية كلها؛ لا نرسل نتيجة ناقصة على أنها لا فرص.
-        df = fetch(code, "1y")
-        validate_session_data(df, code, local)
-        indicators = add_indicators(df).dropna()
-        if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
-            raise DataValidationError(f"{code}: تعذر التحقق من مؤشرات جلسة {expected}.")
-        r = indicators.iloc[-1]
-        if not buy_signal(r):
-            continue
-        entry = float(r.Close)
-        stop = entry - ATR_STOP_MULT * float(r.atr)
-        target = entry + ATR_TARGET_MULT * float(r.atr)
-        # يتحقق هنا من صلاحية الأسعار قبل أن يصل المرشح إلى مرحلة التوزيع.
-        estimated_loss_per_share(entry, stop)
-        candidates.append(dict(
-            code=code, name=name, entry=entry, stop=stop, target=target,
-            rsi=float(r.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
-        ))
+        try:
+            # OHLCV من Yahoo لحساب المؤشرات؛ سعر الإشارة وتوقيته من سهمك.
+            df = fetch(code, "1y")
+            validate_session_data(df, code, local)
+            indicators = add_indicators(df).dropna()
+            if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
+                raise DataValidationError(f"{code}: تعذر التحقق من مؤشرات جلسة {expected}.")
+            quote = fetch_sahmk_quote(code, expected)
+            r = indicators.iloc[-1]
+            yahoo_close = float(r.Close)
+            if abs(quote["price"] - yahoo_close) / yahoo_close > 0.05:
+                raise DataValidationError(
+                    f"{code}: اختلاف سعر سهمك عن سجل Yahoo بأكثر من 5%؛ أوقفنا الإشارة للمراجعة."
+                )
+            MARKET_AUDIT.append({
+                "label": f"{name} ({code})", "timestamp": quote["updated_at"],
+                "delayed": quote["is_delayed"], "status": "OK",
+            })
+            print(
+                f"[تدقيق البيانات] {name} ({code}): OK | "
+                f"{quote['updated_at'].strftime('%Y-%m-%d %H:%M %Z')} | "
+                f"{'متأخرة' if quote['is_delayed'] else 'لحظية'}"
+            )
+            if not buy_signal(r):
+                continue
+            entry = quote["price"]
+            stop = entry - ATR_STOP_MULT * float(r.atr)
+            target = entry + ATR_TARGET_MULT * float(r.atr)
+            estimated_loss_per_share(entry, stop)
+            candidates.append(dict(
+                code=code, name=name, entry=entry, stop=stop, target=target,
+                rsi=float(r.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
+                quote_time=quote["updated_at"], delayed=quote["is_delayed"],
+            ))
+        except Exception as exc:
+            MARKET_AUDIT.append({
+                "label": f"{name} ({code})", "timestamp": None,
+                "delayed": None, "status": "FAILED", "error": str(exc),
+            })
+            print(f"[تدقيق البيانات] {name} ({code}): FAILED | {exc}")
+            print_market_audit()
+            raise
+
+    print_market_audit()
     allocated = allocate_positions(candidates)
     if candidates and not allocated:
         raise SignalAllocationError(
@@ -256,15 +481,40 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
     return allocated
 
 
+def print_market_audit() -> None:
+    """سجل موجز قابل للتدقيق لتغطية تاسي والأسهم العشرة."""
+    records = MARKET_AUDIT or []
+    ok = sum(item["status"] == "OK" for item in records)
+    failed = sum(item["status"] != "OK" for item in records)
+    print(f"[تدقيق البيانات] الملخص: {ok}/{len(SYMBOLS) + 1} ناجح | {failed} فاشل.")
+    for item in records:
+        stamp = item["timestamp"]
+        stamp_text = stamp.strftime("%Y-%m-%d %H:%M %Z") if stamp is not None else "لا يوجد"
+        delay = ("متأخرة" if item["delayed"] else "لحظية") if item["delayed"] is not None else "غير محدد"
+        print(f"[تدقيق البيانات] {item['label']} | {item['status']} | {stamp_text} | {delay}")
+
+
 def format_message(signals: list[dict]) -> str:
     today = datetime.now(TZ).strftime("%Y-%m-%d")
+    market = MARKET_CONTEXT or {}
+    market_line = "تاسي: بيانات سهمك غير متاحة."
+    if market:
+        delay_label = "متأخرة" if market["is_delayed"] else "لحظية"
+        market_line = (
+            f"تاسي: {market['index_value']:.2f} "
+            f"({market['change_percent']:+.2f}%) | {delay_label} "
+            f"| تحديث: {market['timestamp'].strftime('%Y-%m-%d %H:%M %Z')}"
+        )
+    audit = MARKET_AUDIT or []
+    verified = sum(item["status"] == "OK" for item in audit)
+    coverage_line = f"تغطية التحقق: {verified}/{len(SYMBOLS) + 1} (تاسي + 10 أسهم)"
     if not signals:
-        return (f"📊 إشارات تداول - {today}\n"
-                "لا توجد فرص شراء بعد التحقق من بيانات جلسة التداول المتوقعة لجميع الأسهم.")
+        return (f"📊 إشارات تداول - {today}\\n{market_line}\\n{coverage_line}\\n"
+                "لا توجد فرص شراء بعد التحقق من بيانات سهمك وجلسة جميع الأسهم.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 إشارات تداول - {today}",
-             f"(بناءً على إغلاق {signals[0]['date']})", ""]
+    lines = [f"📊 إشارات تداول - {today}", market_line, coverage_line,
+             f"(مؤشرات فنية من Yahoo، وسعر الإشارة من سهمك؛ جلسة {signals[0]['date']})", ""]
     for s in signals:
         lines += [
             f"🟢 {s['name']} ({s['code']})",
@@ -272,7 +522,8 @@ def format_message(signals: list[dict]) -> str:
             f"وقف الخسارة: {s['stop']:.2f}",
             f"الهدف: {s['target']:.2f}",
             f"الكمية المقترحة: {s['shares']} سهم (~{s['value']:,.2f} ريال)",
-            f"RSI: {s['rsi']:.0f}", "",
+            f"RSI: {s['rsi']:.0f}",
+            f"سعر سهمك محدث: {s['quote_time'].strftime('%H:%M %Z')} ({'متأخر' if s['delayed'] else 'لحظي'})", "",
         ]
     lines += [
         f"إجمالي المخاطرة التقديرية (مع الرسوم والانزلاق): {total_risk:.2f} من 10 ريالات",
