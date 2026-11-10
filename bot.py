@@ -4,7 +4,8 @@
 
 الأوامر:
     python bot.py backtest   # اختبار تاريخي للاستراتيجية ومقارنة تاسي
-    python bot.py run        # توليد الإشارات وإرسالها بعد إغلاق السوق وتحديث الأسعار
+    python bot.py run        # توليد توصيات الجلسة التالية بعد الإغلاق
+    python bot.py review     # مراجعة التوصيات عند 10:15 ببيانات متأخرة 15 دقيقة
     python bot.py daemon     # انتظار وقت الإرسال اليومي (16:00 بتوقيت الرياض)
 """
 import os
@@ -35,6 +36,8 @@ FEE = 0.0012                   # عمولة + رسوم تقريبية لكل ج�
 SLIPPAGE_RATE = 0.001          # انزلاق افتراضي 0.10% لكل جهة في الاختبار وتقدير الخطر
 SEND_TIME = (16, 0)            # 16:00 بتوقيت الرياض، بعد نهاية التداول والتحديث
 CLOSE_DATA_READY_TIME = (15, 15)  # بعد انتهاء مزاد الإغلاق؛ نقبل التأخير إذا اكتملت جلسة اليوم
+REVIEW_TIME = (10, 15)  # مراجعة اليوم التالي؛ بيانات متأخرة 15 دقيقة تعكس السوق حتى 10:00
+REVIEW_DELAY_MINUTES = 15
 TRADING_DAYS = {6, 0, 1, 2, 3}  # الأحد-الخميس (Python: الإثنين=0 ... الأحد=6)
 TZ = ZoneInfo("Asia/Riyadh")
 TASI_SYMBOL = "^TASI.SR"
@@ -215,6 +218,39 @@ def fetch_sahmk_quote(code: str, expected_date) -> dict:
         "updated_at": updated_at,
         "is_delayed": _sahmk_delayed(data, envelope),
     }
+
+
+def validate_review_quote_timestamp(timestamp: pd.Timestamp, now: datetime,
+                                    label: str = "السعر") -> None:
+    """At 10:15 Riyadh, accept delayed quotes representing roughly 10:00 market time."""
+    local_now = _local_now(now)
+    age_minutes = (local_now - timestamp.to_pydatetime()).total_seconds() / 60
+    if timestamp.date() != local_now.date():
+        raise DataValidationError(f"{label}: توقيت السعر لا يخص جلسة اليوم.")
+    if age_minutes < 10 or age_minutes > 20:
+        raise DataValidationError(
+            f"{label}: عمر السعر {age_minutes:.1f} دقيقة؛ المتوقع قرابة 15 دقيقة عند مراجعة 10:15."
+        )
+
+
+def fetch_sahmk_review_quote(code: str, now: datetime) -> dict:
+    """Fetch current delayed quote for the 10:15 next-session review."""
+    payload = sahmk_get(f"quote/{code}/")
+    data, envelope = _sahmk_response_data(payload)
+    price = data.get("price")
+    updated = _sahmk_timestamp(data, envelope)
+    if price is None or not updated:
+        raise DataValidationError(f"{code}: استجابة سهمك لا تحتوي السعر وتوقيت السوق.")
+    try:
+        updated_at = _saudi_timestamp(updated)
+        price = float(price)
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(f"{code}: سعر أو توقيت سهمك غير صالح.") from exc
+    if not pd.notna(price) or price <= 0:
+        raise DataValidationError(f"{code}: سعر سهمك غير صالح.")
+    validate_review_quote_timestamp(updated_at, now, f"{code} من سهمك")
+    return {"price": price, "updated_at": updated_at,
+            "is_delayed": _sahmk_delayed(data, envelope)}
 
 
 def fetch_sahmk_market_summary(expected_date) -> dict:
@@ -499,6 +535,71 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
             "رُصدت إشارات فنية لكن تعذر تخصيص سهم واحد ضمن سقفي المخاطرة والمراكز؛ لم تُرسل نتيجة فارغة."
         )
     return allocated
+
+
+def review_next_session(now: datetime | None = None) -> str:
+    """Review prior-close setups at 10:15 using quotes delayed by about 15 minutes."""
+    local = _local_now(now)
+    if local.weekday() not in TRADING_DAYS or (local.hour, local.minute) < REVIEW_TIME:
+        raise DataValidationError("مراجعة التوصيات متاحة في أيام التداول ابتداءً من 10:15 بتوقيت الرياض.")
+
+    expected = latest_expected_session(local)
+    candidates = []
+    diagnostics = []
+    for code, name in SYMBOLS.items():
+        df = fetch(code, "1y")
+        # Exclude any partial current-day Yahoo candle; use the last completed session only.
+        completed = df[[pd.Timestamp(index).date() <= expected for index in df.index]]
+        if completed.empty or pd.Timestamp(completed.index[-1]).date() != expected:
+            raise DataValidationError(f"{code}: لا تتوفر شمعة مكتملة لجلسة {expected}.")
+        indicators = add_indicators(completed).dropna()
+        if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
+            raise DataValidationError(f"{code}: المؤشرات الفنية لجلسة {expected} غير مكتملة.")
+        row = indicators.iloc[-1]
+        reasons = buy_signal_reasons(row)
+        if reasons:
+            diagnostics.append(f"• {name} ({code}): {'؛ '.join(reasons)}")
+            continue
+        reference = float(row.Close)
+        stop = reference - ATR_STOP_MULT * float(row.atr)
+        target = reference + ATR_TARGET_MULT * float(row.atr)
+        estimated_loss_per_share(reference, stop)
+        candidates.append(dict(code=code, name=name, entry=reference, stop=stop,
+                               target=target, rsi=float(row.rsi),
+                               date=pd.Timestamp(indicators.index[-1]).date()))
+
+    allocated = allocate_positions(candidates)
+    lines = [
+        f"🕙 مراجعة توصيات اليوم التالي - {local.strftime('%Y-%m-%d %H:%M')} بتوقيت الرياض",
+        f"مرجع التحليل: إغلاق جلسة {expected}",
+        "تنبيه: تأخر الأسعار 15 دقيقة؛ قراءة 10:15 تعكس تقريباً السوق حتى 10:00.",
+        "هذه مراجعة سعرية فقط؛ القرار والتنفيذ يدويان، ولا توجد أوامر آلية.",
+        "",
+    ]
+    if not allocated:
+        lines.append("لا توجد توصيات سابقة مستوفية لشروط الدخول عند إغلاق الجلسة السابقة.")
+    for item in allocated:
+        quote = fetch_sahmk_review_quote(item["code"], local)
+        change_pct = (quote["price"] / item["entry"] - 1) * 100
+        if quote["price"] >= item["target"]:
+            status = "وصل السعر إلى الهدف المرجعي؛ لا تطارد السهم."
+        elif quote["price"] <= item["stop"]:
+            status = "وصل السعر إلى وقف الخسارة المرجعي أو دونه؛ ألغِ فكرة الدخول."
+        elif quote["price"] <= item["entry"]:
+            status = "السعر عند أو دون مرجع الإغلاق؛ راجع سبب التراجع والسيولة قبل القرار."
+        else:
+            status = "السعر أعلى من مرجع الإغلاق؛ قيّم الارتفاع ولا تطارد السهم."
+        lines.extend([
+            f"• {item['name']} ({item['code']})",
+            f"  مرجع الإغلاق: {item['entry']:.2f} | السعر المتأخر: {quote['price']:.2f} ({change_pct:+.2f}%)",
+            f"  وقت السعر: {quote['updated_at'].strftime('%H:%M %Z')} | {'متأخر' if quote['is_delayed'] else 'غير مصنف كتأخير'}",
+            f"  وقف الخسارة المرجعي: {item['stop']:.2f} | الهدف المرجعي: {item['target']:.2f}",
+            f"  التقييم: {status}",
+            "",
+        ])
+    if diagnostics:
+        lines.extend(["أسباب عدم إدراج الأسهم الأخرى:", *diagnostics])
+    return "\n".join(lines)
 
 
 def print_market_audit() -> None:
@@ -840,9 +941,11 @@ def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "backtest":
         run_backtest()
+    elif cmd == "review":
+        send(review_next_session())
     elif cmd == "daemon":
         daemon()
-    else:
+    else
         # الاستثناء قبل send يمنع إرسال «لا توجد فرص» عند فشل التحقق.
         send(format_message(generate_signals()))
 
