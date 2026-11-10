@@ -745,7 +745,7 @@ def review_next_session(now: datetime | None = None) -> str:
 
 
 def print_market_audit() -> None:
-    """سجل موجز قابل للتدقيق لتغطية تاسي وقائمة الأسهم التجريبية."""
+    """سجل موجز قابل للتدقيق لتغطية تاسي وقائمة المسح الديناميكية."""
     records = MARKET_AUDIT or []
     ok = sum(item["status"] == "OK" for item in records)
     failed = sum(item["status"] != "OK" for item in records)
@@ -787,7 +787,7 @@ def format_message(signals: list[dict]) -> str:
     )
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
-        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
+        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{universe_line}\n{coverage_line}\n"
                 "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
                 "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
     total_risk = sum(s["risk"] for s in signals)
