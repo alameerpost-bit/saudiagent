@@ -34,6 +34,7 @@ ATR_TARGET_MULT = 3.0          # الهدف = 3 × ATR
 FEE = 0.0012                   # عمولة + رسوم تقريبية لكل جهة
 SLIPPAGE_RATE = 0.001          # انزلاق افتراضي 0.10% لكل جهة في الاختبار وتقدير الخطر
 SEND_TIME = (16, 0)            # 16:00 بتوقيت الرياض، بعد نهاية التداول والتحديث
+CLOSE_DATA_READY_TIME = (15, 15)  # بعد انتهاء مزاد الإغلاق؛ نقبل التأخير إذا اكتملت جلسة اليوم
 TRADING_DAYS = {6, 0, 1, 2, 3}  # الأحد-الخميس (Python: الإثنين=0 ... الأحد=6)
 TZ = ZoneInfo("Asia/Riyadh")
 TASI_SYMBOL = "^TASI.SR"
@@ -178,8 +179,17 @@ def _sahmk_delayed(data: dict, envelope: dict) -> bool:
     value = data.get("is_delayed")
     if value is None:
         value = envelope.get("is_delayed")
-    # Fail closed: an unspecified delay flag must never be presented as realtime.
+    # Delay is metadata for next-session analysis, not an automatic rejection.
     return True if value is None else bool(value)
+
+
+def validate_post_close_timestamp(timestamp: pd.Timestamp, label: str, expected_date) -> None:
+    """Accept delayed daily data only when its market timestamp confirms today's close."""
+    if timestamp.date() != expected_date:
+        raise DataValidationError(f"{label}: آخر تحديث {timestamp.date()} وليس جلسة {expected_date}.")
+    if (timestamp.hour, timestamp.minute) < CLOSE_DATA_READY_TIME:
+        ready = f"{CLOSE_DATA_READY_TIME[0]:02d}:{CLOSE_DATA_READY_TIME[1]:02d}"
+        raise DataValidationError(f"{label}: التحديث {timestamp.strftime('%H:%M')} قبل اكتمال الإغلاق ({ready} بتوقيت الرياض)؛ لا نعتمده كتحديث نهائي.")
 
 
 def fetch_sahmk_quote(code: str, expected_date) -> dict:
@@ -199,10 +209,7 @@ def fetch_sahmk_quote(code: str, expected_date) -> dict:
         raise DataValidationError(f"{code}: سعر أو توقيت سهمك غير صالح.") from exc
     if not pd.notna(price) or price <= 0:
         raise DataValidationError(f"{code}: سعر سهمك غير صالح.")
-    if updated_at.date() != expected_date:
-        raise DataValidationError(
-            f"{code}: آخر تحديث من سهمك {updated_at.date()} وليس جلسة {expected_date}؛ أوقفنا الإشارات."
-        )
+    validate_post_close_timestamp(updated_at, f"{code} من سهمك", expected_date)
     return {
         "price": price,
         "updated_at": updated_at,
@@ -223,10 +230,7 @@ def fetch_sahmk_market_summary(expected_date) -> dict:
         change_pct = float(data["index_change_percent"])
     except (KeyError, TypeError, ValueError) as exc:
         raise DataValidationError("تاسي: استجابة سهمك ناقصة أو غير صالحة.") from exc
-    if updated_at.date() != expected_date:
-        raise DataValidationError(
-            f"تاسي: آخر تحديث من سهمك {updated_at.date()} وليس جلسة {expected_date}؛ أوقفنا الإشارات."
-        )
+    validate_post_close_timestamp(updated_at, "تاسي من سهمك", expected_date)
     return {
         "index_value": index_value,
         "change_percent": change_pct,
@@ -321,11 +325,22 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def buy_signal_reasons(r) -> list[str]:
+    """Explain unmet technical conditions for a daily next-session setup."""
+    reasons = []
+    if not (pd.notna(r.ma20) and pd.notna(r.ma50) and r.ma20 > r.ma50):
+        reasons.append("الاتجاه: متوسط 20 ليس أعلى من متوسط 50")
+    if not (pd.notna(r.Close) and pd.notna(r.ma20) and r.Close > r.ma20):
+        reasons.append("السعر: الإغلاق ليس أعلى من متوسط 20")
+    if not (pd.notna(r.rsi) and 45 < r.rsi < 70):
+        reasons.append(f"RSI خارج النطاق 45–70 (الحالي: {r.rsi:.1f})" if pd.notna(r.rsi) else "RSI غير متاح")
+    if not (pd.notna(r.volr) and r.volr >= 1.0):
+        reasons.append(f"الحجم: أقل من متوسط 20 يوماً (النسبة: {r.volr:.2f})" if pd.notna(r.volr) else "حجم التداول غير متاح")
+    return reasons
+
+
 def buy_signal(r) -> bool:
-    return bool(
-        r.ma20 > r.ma50 and r.Close > r.ma20
-        and 45 < r.rsi < 70 and r.volr >= 1.0
-    )
+    return not buy_signal_reasons(r)
 
 
 # ===================== إدارة المخاطر =====================
@@ -452,8 +467,13 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
                 f"{quote['updated_at'].strftime('%Y-%m-%d %H:%M %Z')} | "
                 f"{'متأخرة' if quote['is_delayed'] else 'لحظية'}"
             )
-            if not buy_signal(r):
+            reasons = buy_signal_reasons(r)
+            MARKET_AUDIT[-1]["signal_status"] = "NO_SIGNAL" if reasons else "SIGNAL"
+            MARKET_AUDIT[-1]["reasons"] = reasons
+            if reasons:
+                print(f"[تحليل الدخول] {name} ({code}): لا إشارة — {'؛ '.join(reasons)}")
                 continue
+            print(f"[تحليل الدخول] {name} ({code}): تحققت شروط الدخول الفنية.")
             entry = quote["price"]
             stop = entry - ATR_STOP_MULT * float(r.atr)
             target = entry + ATR_TARGET_MULT * float(r.atr)
@@ -508,17 +528,20 @@ def format_message(signals: list[dict]) -> str:
     audit = MARKET_AUDIT or []
     verified = sum(item["status"] == "OK" for item in audit)
     coverage_line = f"تغطية التحقق: {verified}/{len(SYMBOLS) + 1} (تاسي + 10 أسهم)"
+    diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
+    diagnostics_text = ("\\nأسباب عدم الدخول:\\n" + "\\n".join(diagnostics)) if diagnostics else ""
     if not signals:
-        return (f"📊 إشارات تداول - {today}\\n{market_line}\\n{coverage_line}\\n"
-                "لا توجد فرص شراء بعد التحقق من بيانات سهمك وجلسة جميع الأسهم.")
+        return (f"📊 تحليل فرص اليوم التالي - {today}\\n{market_line}\\n{coverage_line}\\n"
+                "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
+                "\\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 إشارات تداول - {today}", market_line, coverage_line,
-             f"(مؤشرات فنية من Yahoo، وسعر الإشارة من سهمك؛ جلسة {signals[0]['date']})", ""]
+    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, coverage_line,
+             f"(تحليل إغلاق جلسة {signals[0]['date']}؛ المؤشرات من Yahoo وسعر المرجع من سهمك)", ""]
     for s in signals:
         lines += [
             f"🟢 {s['name']} ({s['code']})",
-            f"دخول تقريبي: {s['entry']:.2f}",
+            f"سعر الإغلاق المرجعي: {s['entry']:.2f}",
             f"وقف الخسارة: {s['stop']:.2f}",
             f"الهدف: {s['target']:.2f}",
             f"الكمية المقترحة: {s['shares']} سهم (~{s['value']:,.2f} ريال)",
@@ -528,7 +551,9 @@ def format_message(signals: list[dict]) -> str:
     lines += [
         f"إجمالي المخاطرة التقديرية (مع الرسوم والانزلاق): {total_risk:.2f} من 10 ريالات",
         f"إجمالي تكلفة الشراء التقديرية: {total_commitment:.2f} من 1,000 ريال",
-        "⚠️ أداة مساعدة فقط وليست نصيحة مالية. القرار والمسؤولية عليك.",
+        "أسباب عدم ترشيح بقية الأسهم:" if diagnostics else "",
+        *diagnostics,
+        "⚠️ التوصيات مبنية على إغلاق الجلسة السابقة لجلسة التداول التالية. أعد التحقق من سعر الافتتاح؛ لا تطارد السهم عند فجوة سعرية. لا يوجد تنفيذ آلي.",
     ]
     return "\n".join(lines)
 
