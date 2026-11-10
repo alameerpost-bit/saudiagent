@@ -79,7 +79,7 @@ def _sahmk_retry_delay(response, payload) -> float:
         except (TypeError, ValueError):
             pass
     message = str(payload or "")
-    match = re.search(r"(?:available|retry|wait)\\s+in\\s+(\\d+(?:\\.\\d+)?)\\s+seconds?", message, re.I)
+    match = re.search(r"(?:available|retry|wait)\s+in\s+(\d+(?:\\.\d+)?)\s+seconds?", message, re.I)
     if match:
         return max(0.0, float(match.group(1)))
     return 2.0
