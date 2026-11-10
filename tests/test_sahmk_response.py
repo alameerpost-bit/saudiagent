@@ -6,6 +6,11 @@ import bot
 
 
 class SahmkResponseTests(unittest.TestCase):
+    def setUp(self):
+        bot.SAHMK_MIN_REQUEST_INTERVAL = 0
+        bot._SAHMK_LAST_REQUEST_AT = None
+        bot.SAHMK_MAX_RETRIES = 2
+
     def response(self, status, payload=None, json_error=None):
         response = Mock()
         response.status_code = status
@@ -97,6 +102,37 @@ class SahmkResponseTests(unittest.TestCase):
         with patch.object(bot, "sahmk_get", return_value=payload):
             with self.assertRaisesRegex(bot.DataValidationError, "وقت تحديث السوق"):
                 bot.fetch_sahmk_quote("2222", date(2026, 8, 12))
+
+    def test_retries_rate_limit_using_provider_wait_message(self):
+        limited = self.response(
+            429,
+            {"error": {"code": "RATE_LIMITED",
+                       "message": "Request was throttled. Expected available in 33 seconds."}},
+        )
+        limited.headers = {}
+        success_payload = {"symbol": "2350", "price": 1.5}
+        success = self.response(200, success_payload)
+        with patch.object(bot, "SAHMK_API_KEY", "test-key"), patch.object(
+            bot.requests, "get", side_effect=[limited, success]
+        ) as get, patch.object(bot.time, "sleep") as sleep:
+            result = bot.sahmk_get("quote/2350/")
+
+        self.assertEqual(result, success_payload)
+        self.assertEqual(get.call_count, 2)
+        sleep.assert_called_once_with(33.0)
+
+    def test_retries_rate_limit_using_retry_after_header(self):
+        limited = self.response(429, {"error": {"code": "RATE_LIMITED"}})
+        limited.headers = {"Retry-After": "7"}
+        success_payload = {"symbol": "2222", "price": 26.6}
+        success = self.response(200, success_payload)
+        with patch.object(bot, "SAHMK_API_KEY", "test-key"), patch.object(
+            bot.requests, "get", side_effect=[limited, success]
+        ), patch.object(bot.time, "sleep") as sleep:
+            result = bot.sahmk_get("quote/2222/")
+
+        self.assertEqual(result, success_payload)
+        sleep.assert_called_once_with(7.0)
 
     def test_reports_structured_http_error_code_and_message(self):
         response = self.response(
