@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import Mock, patch
 
 import bot
@@ -19,6 +19,22 @@ class SahmkResponseTests(unittest.TestCase):
         else:
             response.json.return_value = payload
         return response
+
+    def test_review_accepts_quote_approximately_15_minutes_delayed(self):
+        now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
+        timestamp = bot._saudi_timestamp("2026-08-12T10:00:00+03:00")
+        bot.validate_review_quote_timestamp(timestamp, now)
+
+    def test_review_rejects_stale_quote_outside_expected_delay_window(self):
+        now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
+        timestamp = bot._saudi_timestamp("2026-08-12T09:50:00+03:00")
+        with self.assertRaisesRegex(bot.DataValidationError, "عمر السعر"):
+            bot.validate_review_quote_timestamp(timestamp, now)
+
+    def test_review_command_rejects_time_before_1015(self):
+        now = datetime.fromisoformat("2026-08-12T10:14:00+03:00")
+        with self.assertRaisesRegex(bot.DataValidationError, "10:15"):
+            bot.review_next_session(now)
 
     def test_reads_documented_flat_quote_payload(self):
         payload = {
@@ -93,6 +109,52 @@ class SahmkResponseTests(unittest.TestCase):
         self.assertEqual(result["change_percent"], 0.1)
         self.assertEqual(result["timestamp"].date(), date(2026, 8, 12))
         self.assertFalse(result["is_delayed"])
+
+    def test_accepts_delayed_quote_after_market_close_for_next_session(self):
+        payload = {
+            "data": {
+                "symbol": "2222",
+                "price": 26.6,
+                "timestamp": "2026-08-12T12:20:00+00:00",
+                "is_delayed": True,
+            }
+        }
+        with patch.object(bot, "sahmk_get", return_value=payload):
+            result = bot.fetch_sahmk_quote("2222", date(2026, 8, 12))
+        self.assertTrue(result["is_delayed"])
+        self.assertEqual(result["updated_at"].strftime("%H:%M"), "15:20")
+
+    def test_rejects_quote_timestamp_before_close_confirmation(self):
+        payload = {
+            "data": {
+                "symbol": "2222",
+                "price": 26.6,
+                "timestamp": "2026-08-12T11:00:00+00:00",
+                "is_delayed": True,
+            }
+        }
+        with patch.object(bot, "sahmk_get", return_value=payload):
+            with self.assertRaisesRegex(bot.DataValidationError, "قبل اكتمال الإغلاق"):
+                bot.fetch_sahmk_quote("2222", date(2026, 8, 12))
+
+    def test_buy_signal_diagnostics_explain_unmet_conditions(self):
+        from types import SimpleNamespace
+        row = SimpleNamespace(ma20=10.0, ma50=11.0, Close=9.0, rsi=75.0, volr=0.5)
+        reasons = bot.buy_signal_reasons(row)
+        self.assertEqual(len(reasons), 4)
+        self.assertFalse(bot.buy_signal(row))
+
+    def test_telegram_no_signal_message_lists_each_stock_reason(self):
+        bot.MARKET_CONTEXT = {}
+        bot.MARKET_AUDIT = [
+            {"label": "أرامكو (2222)", "timestamp": None, "delayed": True,
+             "status": "OK", "signal_status": "NO_SIGNAL",
+             "reasons": ["RSI خارج النطاق 45–70 (الحالي: 72.0)"]},
+        ]
+        message = bot.format_message([])
+        self.assertIn("أسباب عدم الدخول", message)
+        self.assertIn("أرامكو (2222)", message)
+        self.assertIn("RSI خارج النطاق", message)
 
     def test_does_not_use_proxy_retrieval_time_as_quote_timestamp(self):
         payload = {

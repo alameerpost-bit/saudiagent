@@ -1,0 +1,19 @@
+name: Morning price review
+on:
+  schedule:
+    - cron: "15 7 * * 0-4"   # 10:15 بتوقيت الرياض، الأحد-الخميس (UTC)
+  workflow_dispatch:
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python bot.py review
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
