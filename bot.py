@@ -64,17 +64,41 @@ def sahmk_get(path: str, params: dict | None = None) -> dict:
             params=params,
             timeout=SAHMK_TIMEOUT,
         )
-        response.raise_for_status()
-        payload = response.json()
     except requests.RequestException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         raise DataValidationError(f"سهمك: تعذر جلب {path} (HTTP {status or 'network'}): {exc}") from exc
-    except ValueError as exc:
+
+    status = getattr(response, "status_code", None)
+    try:
+        # Decode first: SAHMK returns useful error.code/error.message JSON on
+        # non-2xx responses, which raise_for_status() would otherwise discard.
+        payload = response.json()
+    except (TypeError, ValueError) as exc:
+        if status is not None and status >= 400:
+            raise DataValidationError(
+                f"سهمك: تعذر جلب {path} (HTTP {status}): استجابة خطأ غير صالحة كـ JSON."
+            ) from exc
         raise DataValidationError(f"سهمك: استجابة غير صالحة من {path}.") from exc
+
     if not isinstance(payload, dict):
         raise DataValidationError(f"سهمك: تنسيق استجابة غير متوقع من {path}.")
-    if payload.get("error"):
-        raise DataValidationError(f"سهمك: {payload['error']}")
+    error = payload.get("error")
+    if (status is not None and status >= 400) or error:
+        if isinstance(error, dict):
+            details = [
+                str(value)
+                for value in (error.get("code"), error.get("message"))
+                if value
+            ]
+            detail = ": ".join(details)
+        else:
+            detail = str(error) if error else ""
+        fallback = payload.get("detail")
+        if fallback and str(fallback) not in detail:
+            detail = f"{detail}: {fallback}" if detail else str(fallback)
+        detail = detail or "استجابة خطأ من الواجهة."
+        status_text = f"HTTP {status}" if status is not None else "خطأ"
+        raise DataValidationError(f"سهمك: تعذر جلب {path} ({status_text}): {detail}")
     return payload
 
 
