@@ -20,16 +20,34 @@ import requests
 import yfinance as yf
 
 # ===================== الإعدادات =====================
-SYMBOLS = {
+BACKTEST_SYMBOLS = {  # قائمة ثابتة للاختبار التاريخي فقط؛ المسح الحي ديناميكي من سهمك
+    # قائمة تجريبية ثابتة من 50 سهماً؛ لا تمثل ترتيباً يومياً للسيولة.
     "2222": "أرامكو", "1120": "الراجحي", "1180": "الأهلي", "1150": "الإنماء",
     "2010": "سابك", "7010": "stc", "1211": "معادن", "2280": "المراعي",
     "5110": "الكهرباء", "2350": "كيان",
+    "1010": "الرياض", "1020": "الجزيرة", "1030": "الاستثمار", "1050": "السعودي الفرنسي",
+    "1060": "الأول", "1080": "العربي الوطني", "1140": "البلاد",
+    "2020": "سابك للمغذيات الزراعية", "2030": "المصافي", "2040": "الخزف السعودي",
+    "2060": "التصنيع", "2080": "غازكو", "2082": "أكوا باور", "2090": "الجبس الأهلية",
+    "2170": "اللجين", "2190": "سيسكو القابضة", "2200": "الأنابيب العربية",
+    "2230": "الكيميائية", "2240": "زامل للصناعة", "2270": "سدافكو",
+    "2290": "ينساب", "2300": "صناعة الورق", "2310": "سبكيم", "2330": "المتقدمة",
+    "2380": "بترو رابغ",
+    "4001": "أسواق العثيم", "4002": "المواساة", "4003": "إكسترا",
+    "4004": "دله الصحية", "4005": "رعاية", "4007": "الحمادي",
+    "4013": "د. سليمان الحبيب", "4030": "البحري", "4190": "جرير",
+    "4200": "الدريس", "4210": "الأبحاث والإعلام", "4240": "سابتكو",
+    "4260": "بدجت السعودية", "4300": "دار الأركان", "7020": "موبايلي",
 }
+
 CAPITAL = 1000                 # رأس المال بالريال
 RISK_PER_TRADE = 0.01          # حد الخطر الاسمي لكل إشارة قبل توزيع السقف الإجمالي
 MAX_TOTAL_RISK = CAPITAL * 0.01  # إجمالي الخطر الأقصى لجميع الإشارات: 10 ريالات
 MAX_TOTAL_POSITION = CAPITAL   # إجمالي تكلفة المراكز المقترحة لا يتجاوز 1,000 ريال
 MAX_POSITION = 0.20            # حد إضافي للمركز الواحد: 20% من رأس المال
+SCAN_SIZE = 50              # أعلى 50 سهماً حسب قيمة التداول اليومية من سهمك
+MAX_SIGNALS = 3                 # أقصى عدد فرص مرسلة بعد ترتيب المرشحين حسب قيمة التداول
+MIN_SCAN_COVERAGE = 0.80         # لا نرسل نتائج إذا تعذر التحقق من 80% من القائمة
 ATR_STOP_MULT = 2.0            # وقف الخسارة = 2 × ATR
 ATR_TARGET_MULT = 3.0          # الهدف = 3 × ATR
 FEE = 0.0012                   # عمولة + رسوم تقريبية لكل جهة
@@ -53,6 +71,7 @@ SAHMK_MAX_RETRIES = int(os.getenv("SAHMK_MAX_RETRIES", "2"))
 _SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
 MARKET_AUDIT = []
+MARKET_UNIVERSE_CONTEXT = None
 
 
 class DataValidationError(RuntimeError):
@@ -253,6 +272,82 @@ def fetch_sahmk_review_quote(code: str, now: datetime) -> dict:
             "is_delayed": _sahmk_delayed(data, envelope)}
 
 
+def fetch_sahmk_top_value_symbols(expected_date=None, review_now: datetime | None = None) -> dict:
+    """Fetch and validate the current top 50 TASI equities by traded value (SAR)."""
+    global MARKET_UNIVERSE_CONTEXT
+    payload = sahmk_get("market/value/", params={"limit": SCAN_SIZE, "index": "TASI"})
+    data, envelope = _sahmk_response_data(payload)
+
+    market = data.get("index") or envelope.get("index")
+    if market and str(market).upper() != "TASI":
+        raise DataValidationError(f"سهمك: مسار قيمة التداول أعاد السوق {market} بدلاً من TASI.")
+
+    rows = data.get("stocks")
+    if not isinstance(rows, list):
+        raise DataValidationError("سهمك: استجابة أعلى الأسهم قيمةً لا تحتوي قائمة stocks موثقة.")
+    if len(rows) < SCAN_SIZE:
+        raise DataValidationError(
+            f"سهمك: أعاد مسار أعلى الأسهم قيمةً {len(rows)} سهماً فقط؛ نحتاج {SCAN_SIZE}."
+        )
+
+    shared_timestamp = _sahmk_timestamp(data, envelope)
+    delayed_value = data.get("is_delayed", envelope.get("is_delayed"))
+    delayed = True if delayed_value is None else bool(delayed_value)
+    ranked = []
+    seen = set()
+    timestamps = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("symbol") or "").strip()
+        if not re.fullmatch(r"\d{4}", code):
+            continue
+        if code in seen:
+            raise DataValidationError(f"سهمك: رمز مكرر في قائمة أعلى قيمة تداول: {code}.")
+        try:
+            traded_value = float(row.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not pd.notna(traded_value) or traded_value <= 0:
+            continue
+
+        raw_timestamp = row.get("updated_at") or shared_timestamp
+        if not raw_timestamp:
+            raise DataValidationError(f"سهمك: لا يوجد وقت تحديث موثوق للسهم {code} في قائمة السيولة.")
+        timestamp = _saudi_timestamp(raw_timestamp)
+        if review_now is not None:
+            validate_review_quote_timestamp(timestamp, review_now, f"قائمة السيولة للسهم {code}")
+        else:
+            if expected_date is None:
+                raise DataValidationError("يلزم تحديد تاريخ الجلسة للتحقق من قائمة السيولة بعد الإغلاق.")
+            validate_post_close_timestamp(timestamp, f"قائمة السيولة للسهم {code}", expected_date)
+
+        name = str(row.get("name") or row.get("name_ar") or code).strip()
+        ranked.append((code, name, traded_value, timestamp))
+        seen.add(code)
+        timestamps.append(timestamp)
+
+    if len(ranked) < SCAN_SIZE:
+        raise DataValidationError(
+            f"سهمك: بعد التحقق من الرموز وقيم التداول والتوقيت، بقي {len(ranked)} سهماً فقط من أصل {SCAN_SIZE}."
+        )
+
+    ranked.sort(key=lambda item: (-item[2], item[0]))
+    top = ranked[:SCAN_SIZE]
+    if len({item[0] for item in top}) != SCAN_SIZE:
+        raise DataValidationError("سهمك: تعذر تكوين 50 رمزاً فريداً لقائمة السيولة.")
+
+    MARKET_UNIVERSE_CONTEXT = {
+        "source": "SAHMK /market/value/",
+        "count": len(top),
+        "timestamp": min(item[3] for item in top),
+        "is_delayed": delayed,
+        "ranking": "قيمة التداول بالريال السعودي",
+    }
+    return {code: name for code, name, _, _ in top}
+
+
 def fetch_sahmk_market_summary(expected_date) -> dict:
     """ملخص تاسي من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
     payload = sahmk_get("market/summary/", params={"index": "TASI"})
@@ -358,6 +453,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     ], axis=1).max(axis=1)
     df["atr"] = tr.rolling(14).mean()
     df["volr"] = df.Volume / df.Volume.rolling(20).mean()
+    df["avg_value_20"] = (df.Close * df.Volume).rolling(20).mean()
     return df
 
 
@@ -377,6 +473,19 @@ def buy_signal_reasons(r) -> list[str]:
 
 def buy_signal(r) -> bool:
     return not buy_signal_reasons(r)
+
+
+def select_top_candidates(candidates: list[dict], limit: int = MAX_SIGNALS) -> list[dict]:
+    """Rank valid setups by 20-session average traded value, then relative volume."""
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            -float(item.get("avg_value_20", 0) or 0),
+            -float(item.get("volr", 0) or 0),
+            str(item.get("code", "")),
+        ),
+    )
+    return ranked[:max(0, int(limit))]
 
 
 # ===================== إدارة المخاطر =====================
@@ -466,9 +575,11 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
     candidates = []
     expected = latest_expected_session(local)
-    global MARKET_CONTEXT, MARKET_AUDIT
+    global MARKET_CONTEXT, MARKET_AUDIT, MARKET_UNIVERSE_CONTEXT
     MARKET_AUDIT = []
-    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(SYMBOLS)} أسهم.")
+    active_symbols = fetch_sahmk_top_value_symbols(expected_date=expected)
+    print(f"[قائمة المسح] أعلى {len(active_symbols)} سهماً في تاسي حسب قيمة التداول؛ المصدر سهمك.")
+    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(active_symbols)} سهماً.")
     MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
     MARKET_AUDIT.append({
         "label": "تاسي", "timestamp": MARKET_CONTEXT["timestamp"],
@@ -479,37 +590,41 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
         f"| {'متأخرة' if MARKET_CONTEXT['is_delayed'] else 'لحظية'}"
     )
 
-    for code, name in SYMBOLS.items():
+    for code, name in active_symbols.items():
         try:
-            # OHLCV من Yahoo لحساب المؤشرات؛ سعر الإشارة وتوقيته من سهمك.
+            # OHLCV من Yahoo لكل القائمة؛ نطلب سعر سهمك فقط للأسهم التي اجتازت الفحص الفني.
             df = fetch(code, "1y")
             validate_session_data(df, code, local)
             indicators = add_indicators(df).dropna()
             if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
                 raise DataValidationError(f"{code}: تعذر التحقق من مؤشرات جلسة {expected}.")
-            quote = fetch_sahmk_quote(code, expected)
             r = indicators.iloc[-1]
+            reasons = buy_signal_reasons(r)
+            if reasons:
+                MARKET_AUDIT.append({
+                    "label": f"{name} ({code})", "timestamp": None,
+                    "delayed": None, "status": "OK",
+                    "signal_status": "NO_SIGNAL", "reasons": reasons,
+                })
+                print(f"[تحليل الدخول] {name} ({code}): لا إشارة — {'؛ '.join(reasons)}")
+                continue
+
+            quote = fetch_sahmk_quote(code, expected)
             yahoo_close = float(r.Close)
             if abs(quote["price"] - yahoo_close) / yahoo_close > 0.05:
                 raise DataValidationError(
-                    f"{code}: اختلاف سعر سهمك عن سجل Yahoo بأكثر من 5%؛ أوقفنا الإشارة للمراجعة."
+                    f"{code}: اختلاف سعر سهمك عن سجل Yahoo بأكثر من 5%؛ أوقفنا الإشارة لهذا السهم."
                 )
             MARKET_AUDIT.append({
                 "label": f"{name} ({code})", "timestamp": quote["updated_at"],
                 "delayed": quote["is_delayed"], "status": "OK",
+                "signal_status": "SIGNAL",
             })
             print(
                 f"[تدقيق البيانات] {name} ({code}): OK | "
                 f"{quote['updated_at'].strftime('%Y-%m-%d %H:%M %Z')} | "
                 f"{'متأخرة' if quote['is_delayed'] else 'لحظية'}"
             )
-            reasons = buy_signal_reasons(r)
-            MARKET_AUDIT[-1]["signal_status"] = "NO_SIGNAL" if reasons else "SIGNAL"
-            MARKET_AUDIT[-1]["reasons"] = reasons
-            if reasons:
-                print(f"[تحليل الدخول] {name} ({code}): لا إشارة — {'؛ '.join(reasons)}")
-                continue
-            print(f"[تحليل الدخول] {name} ({code}): تحققت شروط الدخول الفنية.")
             entry = quote["price"]
             stop = entry - ATR_STOP_MULT * float(r.atr)
             target = entry + ATR_TARGET_MULT * float(r.atr)
@@ -518,19 +633,30 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
                 code=code, name=name, entry=entry, stop=stop, target=target,
                 rsi=float(r.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
                 quote_time=quote["updated_at"], delayed=quote["is_delayed"],
+                avg_value_20=float(r.avg_value_20), volr=float(r.volr),
             ))
+            print(f"[تحليل الدخول] {name} ({code}): تحققت الشروط الفنية.")
         except Exception as exc:
             MARKET_AUDIT.append({
                 "label": f"{name} ({code})", "timestamp": None,
                 "delayed": None, "status": "FAILED", "error": str(exc),
             })
             print(f"[تدقيق البيانات] {name} ({code}): FAILED | {exc}")
-            print_market_audit()
-            raise
+
+    stock_records = [item for item in MARKET_AUDIT if item["label"] != "تاسي"]
+    scan_coverage = sum(item["status"] == "OK" for item in stock_records) / max(1, len(active_symbols))
+    print(f"[مسح السوق] تغطية بيانات الأسهم: {scan_coverage:.0%} ({len(stock_records)}/{len(active_symbols)}).")
+    if scan_coverage < MIN_SCAN_COVERAGE:
+        print_market_audit()
+        raise DataValidationError(
+            f"تغطية مسح السوق {scan_coverage:.0%} أقل من الحد الأدنى {MIN_SCAN_COVERAGE:.0%}؛ أوقفنا التوصيات."
+        )
 
     print_market_audit()
-    allocated = allocate_positions(candidates)
-    if candidates and not allocated:
+    ranked_candidates = select_top_candidates(candidates)
+    print(f"[ترتيب الفرص] {len(ranked_candidates)} من أصل {len(candidates)} مرشحين بعد ترتيب السيولة.")
+    allocated = allocate_positions(ranked_candidates)
+    if ranked_candidates and not allocated:
         raise SignalAllocationError(
             "رُصدت إشارات فنية لكن تعذر تخصيص سهم واحد ضمن سقفي المخاطرة والمراكز؛ لم تُرسل نتيجة فارغة."
         )
@@ -546,34 +672,48 @@ def review_next_session(now: datetime | None = None) -> str:
     expected = latest_expected_session(local)
     candidates = []
     diagnostics = []
-    for code, name in SYMBOLS.items():
-        df = fetch(code, "1y")
-        # Exclude any partial current-day Yahoo candle; use the last completed session only.
-        completed = df[[pd.Timestamp(index).date() <= expected for index in df.index]]
-        if completed.empty or pd.Timestamp(completed.index[-1]).date() != expected:
-            raise DataValidationError(f"{code}: لا تتوفر شمعة مكتملة لجلسة {expected}.")
-        indicators = add_indicators(completed).dropna()
-        if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
-            raise DataValidationError(f"{code}: المؤشرات الفنية لجلسة {expected} غير مكتملة.")
-        row = indicators.iloc[-1]
-        reasons = buy_signal_reasons(row)
-        if reasons:
-            diagnostics.append(f"• {name} ({code}): {'؛ '.join(reasons)}")
-            continue
-        reference = float(row.Close)
-        stop = reference - ATR_STOP_MULT * float(row.atr)
-        target = reference + ATR_TARGET_MULT * float(row.atr)
-        estimated_loss_per_share(reference, stop)
-        candidates.append(dict(code=code, name=name, entry=reference, stop=stop,
-                               target=target, rsi=float(row.rsi),
-                               date=pd.Timestamp(indicators.index[-1]).date()))
+    scan_ok = 0
+    active_symbols = fetch_sahmk_top_value_symbols(review_now=local)
+    for code, name in active_symbols.items():
+        try:
+            df = fetch(code, "1y")
+            completed = df[[pd.Timestamp(index).date() <= expected for index in df.index]]
+            if completed.empty or pd.Timestamp(completed.index[-1]).date() != expected:
+                raise DataValidationError(f"{code}: لا تتوفر شمعة مكتملة لجلسة {expected}.")
+            indicators = add_indicators(completed).dropna()
+            if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
+                raise DataValidationError(f"{code}: المؤشرات الفنية لجلسة {expected} غير مكتملة.")
+            row = indicators.iloc[-1]
+            scan_ok += 1
+            reasons = buy_signal_reasons(row)
+            if reasons:
+                diagnostics.append(f"• {name} ({code}): {'؛ '.join(reasons)}")
+                continue
+            reference = float(row.Close)
+            stop = reference - ATR_STOP_MULT * float(row.atr)
+            target = reference + ATR_TARGET_MULT * float(row.atr)
+            estimated_loss_per_share(reference, stop)
+            candidates.append(dict(
+                code=code, name=name, entry=reference, stop=stop, target=target,
+                rsi=float(row.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
+                avg_value_20=float(row.avg_value_20), volr=float(row.volr),
+            ))
+        except Exception as exc:
+            diagnostics.append(f"• {name} ({code}): تعذر التحقق من البيانات ({exc})")
 
-    allocated = allocate_positions(candidates)
+    scan_coverage = scan_ok / max(1, len(active_symbols))
+    if scan_coverage < MIN_SCAN_COVERAGE:
+        raise DataValidationError(
+            f"تغطية مراجعة السوق {scan_coverage:.0%} أقل من الحد الأدنى {MIN_SCAN_COVERAGE:.0%}؛ أوقفنا المراجعة."
+        )
+    ranked_candidates = select_top_candidates(candidates)
+    allocated = allocate_positions(ranked_candidates)
     lines = [
         f"🕙 مراجعة توصيات اليوم التالي - {local.strftime('%Y-%m-%d %H:%M')} بتوقيت الرياض",
         f"مرجع التحليل: إغلاق جلسة {expected}",
         "تنبيه: تأخر الأسعار 15 دقيقة؛ قراءة 10:15 تعكس تقريباً السوق حتى 10:00.",
         "هذه مراجعة سعرية فقط؛ القرار والتنفيذ يدويان، ولا توجد أوامر آلية.",
+        f"قائمة المسح: أعلى {SCAN_SIZE} سهم بقيمة التداول في تاسي من سهمك؛ وقت البيانات الأقدم: {MARKET_UNIVERSE_CONTEXT['timestamp'].strftime('%Y-%m-%d %H:%M %Z')} ({'متأخرة' if MARKET_UNIVERSE_CONTEXT['is_delayed'] else 'غير مصنفة كتأخير'}).",
         "",
     ]
     if not allocated:
@@ -598,16 +738,18 @@ def review_next_session(now: datetime | None = None) -> str:
             "",
         ])
     if diagnostics:
+        if len(diagnostics) > 20:
+            diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل التشغيل."]
         lines.extend(["أسباب عدم إدراج الأسهم الأخرى:", *diagnostics])
     return "\n".join(lines)
 
 
 def print_market_audit() -> None:
-    """سجل موجز قابل للتدقيق لتغطية تاسي والأسهم العشرة."""
+    """سجل موجز قابل للتدقيق لتغطية تاسي وقائمة المسح الديناميكية."""
     records = MARKET_AUDIT or []
     ok = sum(item["status"] == "OK" for item in records)
     failed = sum(item["status"] != "OK" for item in records)
-    print(f"[تدقيق البيانات] الملخص: {ok}/{len(SYMBOLS) + 1} ناجح | {failed} فاشل.")
+    print(f"[تدقيق البيانات] الملخص: {ok}/{len(records)} ناجح | {failed} فاشل (تاسي + {max(0, len(records) - 1)} سهماً).")
     for item in records:
         stamp = item["timestamp"]
         stamp_text = stamp.strftime("%Y-%m-%d %H:%M %Z") if stamp is not None else "لا يوجد"
@@ -628,16 +770,29 @@ def format_message(signals: list[dict]) -> str:
         )
     audit = MARKET_AUDIT or []
     verified = sum(item["status"] == "OK" for item in audit)
-    coverage_line = f"تغطية التحقق: {verified}/{len(SYMBOLS) + 1} (تاسي + 10 أسهم)"
+    coverage_line = f"تغطية المسح: {verified}/{len(audit)} (تاسي + {max(0, len(audit) - 1)} سهماً) | حد التغطية الأدنى: {MIN_SCAN_COVERAGE:.0%}"
     diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
+    diagnostics.extend(
+        f"• {item['label']}: تعذر التحقق — {item.get('error', 'سبب غير محدد')}"
+        for item in audit if item.get('status') == 'FAILED'
+    )
+    if len(diagnostics) > 20:
+        diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل GitHub Actions."]
+    universe = MARKET_UNIVERSE_CONTEXT or {}
+    universe_stamp = universe.get("timestamp")
+    universe_line = (
+        f"قائمة المسح: أعلى {universe.get('count', SCAN_SIZE)} سهم بقيمة التداول في تاسي "
+        f"| سهمك | {universe_stamp.strftime('%Y-%m-%d %H:%M %Z') if universe_stamp else 'وقت غير متاح'} "
+        f"| {'بيانات متأخرة' if universe.get('is_delayed', True) else 'بيانات غير مصنفة كتأخير'}"
+    )
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
-        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
+        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{universe_line}\n{coverage_line}\n"
                 "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
                 "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, coverage_line,
+    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, universe_line, coverage_line,
              f"(تحليل إغلاق جلسة {signals[0]['date']}؛ المؤشرات من Yahoo وسعر المرجع من سهمك)", ""]
     for s in signals:
         lines += [
@@ -885,7 +1040,7 @@ def _benchmark_return(index_df: pd.DataFrame, start, end) -> tuple[float, object
 
 def run_backtest(now: datetime | None = None) -> None:
     datasets = {}
-    for code in SYMBOLS:
+    for code in BACKTEST_SYMBOLS:
         raw = fetch(code, "5y")
         validate_session_data(raw, code, now)
         indicators = add_indicators(raw).dropna()

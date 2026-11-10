@@ -20,6 +20,87 @@ class SahmkResponseTests(unittest.TestCase):
             response.json.return_value = payload
         return response
 
+    def test_live_scan_size_is_50_and_backtest_universe_is_separate(self):
+        self.assertEqual(bot.SCAN_SIZE, 50)
+        self.assertEqual(len(bot.BACKTEST_SYMBOLS), 50)
+
+    def test_top_candidates_are_ranked_by_turnover_and_limited_to_three(self):
+        candidates = [
+            {"code": "a", "avg_value_20": 100, "volr": 1.2},
+            {"code": "b", "avg_value_20": 300, "volr": 1.1},
+            {"code": "c", "avg_value_20": 200, "volr": 1.4},
+            {"code": "d", "avg_value_20": 50, "volr": 2.0},
+        ]
+        selected = bot.select_top_candidates(candidates)
+        self.assertEqual([item["code"] for item in selected], ["b", "c", "a"])
+        self.assertEqual(len(bot.select_top_candidates(candidates, limit=2)), 2)
+
+    def test_top_value_endpoint_selects_exact_50_by_value_without_forcing_old_symbols(self):
+        rows = [
+            {
+                "symbol": str(1000 + i),
+                "name": f"شركة {i}",
+                "value": float(5000 - i),
+                "updated_at": "2026-08-12T12:20:00+00:00",
+            }
+            for i in range(50)
+        ]
+        payload = {"index": "TASI", "is_delayed": True, "stocks": rows, "count": 50}
+        with patch.object(bot, "sahmk_get", return_value=payload) as get:
+            symbols = bot.fetch_sahmk_top_value_symbols(expected_date=date(2026, 8, 12))
+
+        self.assertEqual(len(symbols), 50)
+        self.assertEqual(list(symbols)[:3], ["1000", "1001", "1002"])
+        self.assertNotIn("2222", symbols)
+        self.assertEqual(bot.MARKET_UNIVERSE_CONTEXT["timestamp"].strftime("%H:%M"), "15:20")
+        self.assertTrue(bot.MARKET_UNIVERSE_CONTEXT["is_delayed"])
+        get.assert_called_once_with("market/value/", params={"limit": 50, "index": "TASI"})
+
+    def test_top_value_endpoint_rejects_incomplete_list(self):
+        payload = {
+            "index": "TASI",
+            "stocks": [
+                {"symbol": str(1000 + i), "name": f"شركة {i}", "value": 1000 + i,
+                 "updated_at": "2026-08-12T12:20:00+00:00"}
+                for i in range(49)
+            ],
+        }
+        with patch.object(bot, "sahmk_get", return_value=payload):
+            with self.assertRaisesRegex(bot.DataValidationError, "نحتاج 50"):
+                bot.fetch_sahmk_top_value_symbols(expected_date=date(2026, 8, 12))
+
+    def test_top_value_endpoint_rejects_stale_or_wrong_session_data(self):
+        rows = [
+            {"symbol": str(1000 + i), "name": f"شركة {i}", "value": 5000 - i,
+             "updated_at": "2026-08-11T12:20:00+00:00"}
+            for i in range(50)
+        ]
+        with patch.object(bot, "sahmk_get", return_value={"index": "TASI", "stocks": rows}):
+            with self.assertRaisesRegex(bot.DataValidationError, "ليس جلسة"):
+                bot.fetch_sahmk_top_value_symbols(expected_date=date(2026, 8, 12))
+
+    def test_top_value_endpoint_rejects_duplicate_symbols(self):
+        rows = [
+            {"symbol": str(1000 + i), "name": f"شركة {i}", "value": 5000 - i,
+             "updated_at": "2026-08-12T12:20:00+00:00"}
+            for i in range(50)
+        ]
+        rows[-1]["symbol"] = rows[0]["symbol"]
+        with patch.object(bot, "sahmk_get", return_value={"index": "TASI", "stocks": rows}):
+            with self.assertRaisesRegex(bot.DataValidationError, "رمز مكرر"):
+                bot.fetch_sahmk_top_value_symbols(expected_date=date(2026, 8, 12))
+
+    def test_top_value_endpoint_validates_delayed_review_timestamp(self):
+        now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
+        rows = [
+            {"symbol": str(1000 + i), "name": f"شركة {i}", "value": 5000 - i,
+             "updated_at": "2026-08-12T07:00:00+00:00"}
+            for i in range(50)
+        ]
+        with patch.object(bot, "sahmk_get", return_value={"index": "TASI", "stocks": rows}):
+            symbols = bot.fetch_sahmk_top_value_symbols(review_now=now)
+        self.assertEqual(len(symbols), 50)
+
     def test_review_accepts_quote_approximately_15_minutes_delayed(self):
         now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
         timestamp = bot._saudi_timestamp("2026-08-12T10:00:00+03:00")
@@ -253,7 +334,7 @@ class SahmkResponseTests(unittest.TestCase):
         with redirect_stdout(output):
             bot.print_market_audit()
         captured = output.getvalue()
-        self.assertIn("2/11 ناجح", captured)
+        self.assertIn("2/2 ناجح", captured)
         self.assertIn("تاسي | OK", captured)
         self.assertIn("أرامكو (2222) | OK", captured)
 
@@ -263,7 +344,7 @@ class SahmkResponseTests(unittest.TestCase):
             {"label": "تاسي", "timestamp": None, "delayed": True, "status": "OK"},
         ]
         message = bot.format_message([])
-        self.assertIn("تغطية التحقق: 1/11", message)
+        self.assertIn("تغطية المسح: 1/1", message)
 
 
 if __name__ == "__main__":
