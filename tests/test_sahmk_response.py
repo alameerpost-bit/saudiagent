@@ -20,6 +20,24 @@ class SahmkResponseTests(unittest.TestCase):
             response.json.return_value = payload
         return response
 
+    def test_watchlist_has_50_unique_symbols_and_preserves_original_ten(self):
+        self.assertEqual(len(bot.SYMBOLS), 50)
+        self.assertEqual(len(set(bot.SYMBOLS)), 50)
+        for code in ("2222", "1120", "1180", "1150", "2010", "7010",
+                     "1211", "2280", "5110", "2350"):
+            self.assertIn(code, bot.SYMBOLS)
+
+    def test_top_candidates_are_ranked_by_turnover_and_limited_to_three(self):
+        candidates = [
+            {"code": "a", "avg_value_20": 100, "volr": 1.2},
+            {"code": "b", "avg_value_20": 300, "volr": 1.1},
+            {"code": "c", "avg_value_20": 200, "volr": 1.4},
+            {"code": "d", "avg_value_20": 50, "volr": 2.0},
+        ]
+        selected = bot.select_top_candidates(candidates)
+        self.assertEqual([item["code"] for item in selected], ["b", "c", "a"])
+        self.assertEqual(len(bot.select_top_candidates(candidates, limit=2)), 2)
+
     def test_review_accepts_quote_approximately_15_minutes_delayed(self):
         now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
         timestamp = bot._saudi_timestamp("2026-08-12T10:00:00+03:00")
@@ -253,7 +271,7 @@ class SahmkResponseTests(unittest.TestCase):
         with redirect_stdout(output):
             bot.print_market_audit()
         captured = output.getvalue()
-        self.assertIn("2/11 ناجح", captured)
+        self.assertIn(f"2/{len(bot.SYMBOLS) + 1} ناجح", captured)
         self.assertIn("تاسي | OK", captured)
         self.assertIn("أرامكو (2222) | OK", captured)
 
@@ -263,7 +281,7 @@ class SahmkResponseTests(unittest.TestCase):
             {"label": "تاسي", "timestamp": None, "delayed": True, "status": "OK"},
         ]
         message = bot.format_message([])
-        self.assertIn("تغطية التحقق: 1/11", message)
+        self.assertIn(f"تغطية المسح: 1/{len(bot.SYMBOLS) + 1}", message)
 
 
 if __name__ == "__main__":
