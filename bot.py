@@ -464,6 +464,26 @@ def _simulate_portfolio(trades: list[dict]) -> tuple[float, list[dict]]:
     return cash, executed
 
 
+def _common_period_bounds(datasets: dict[str, pd.DataFrame],
+                         index_df: pd.DataFrame):
+    """أول وآخر تاريخ موجودين فعليًا في جميع سلاسل الأسهم والمؤشر."""
+    if not datasets:
+        raise DataValidationError("لا توجد سلاسل أسهم لاشتقاق فترة مشتركة.")
+    frames = list(datasets.items()) + [("تاسي", index_df)]
+    date_sets = []
+    for label, df in frames:
+        if df is None or df.empty:
+            raise DataValidationError(f"{label}: لا توجد بيانات لتحديد فترة مشتركة.")
+        date_sets.append({pd.Timestamp(value).date() for value in df.index})
+    shared_dates = set.intersection(*date_sets)
+    if len(shared_dates) < 2:
+        raise DataValidationError(
+            "لا توجد جلستان مشتركتان على الأقل بين جميع الأسهم وتاسي؛ أوقفنا المقارنة."
+        )
+    ordered = sorted(shared_dates)
+    return ordered[0], ordered[-1]
+
+
 def _benchmark_return(index_df: pd.DataFrame, start, end) -> tuple[float, object, object]:
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
@@ -472,12 +492,18 @@ def _benchmark_return(index_df: pd.DataFrame, start, end) -> tuple[float, object
     sample = index_df.loc[mask]
     if len(sample) < 2:
         raise DataValidationError("لا تتوفر جلستان على الأقل لتاسي ضمن فترة المقارنة المشتركة.")
+    actual_start = pd.Timestamp(sample.index[0]).date()
+    actual_end = pd.Timestamp(sample.index[-1]).date()
+    if actual_start != start_date or actual_end != end_date:
+        raise DataValidationError(
+            "بيانات تاسي لا تغطي حدود الفترة المشتركة نفسها؛ أوقفنا المقارنة غير المتكافئة."
+        )
     first = float(sample.Close.iloc[0])
     last = float(sample.Close.iloc[-1])
     entry_fill = first * (1 + SLIPPAGE_RATE)
     exit_fill = last * (1 - SLIPPAGE_RATE)
     return net_return_after_costs(entry_fill, exit_fill), \
-        pd.Timestamp(sample.index[0]).date(), pd.Timestamp(sample.index[-1]).date()
+        actual_start, actual_end
 
 
 def run_backtest(now: datetime | None = None) -> None:
@@ -492,13 +518,7 @@ def run_backtest(now: datetime | None = None) -> None:
 
     index_df = fetch_index("5y")
     validate_session_data(index_df, "تاسي", now)
-    first_dates = [pd.Timestamp(df.index[0]).date() for df in datasets.values()]
-    first_dates.append(pd.Timestamp(index_df.index[0]).date())
-    last_dates = [pd.Timestamp(df.index[-1]).date() for df in datasets.values()]
-    last_dates.append(pd.Timestamp(index_df.index[-1]).date())
-    start, end = max(first_dates), min(last_dates)
-    if start >= end:
-        raise DataValidationError("لا توجد فترة تاريخية مشتركة صالحة لكل الأسهم وتاسي.")
+    start, end = _common_period_bounds(datasets, index_df)
 
     all_trades = []
     for code, df in datasets.items():
