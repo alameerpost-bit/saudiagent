@@ -301,7 +301,7 @@ def fetch_sahmk_top_value_symbols(expected_date=None, review_now: datetime | Non
         if not isinstance(row, dict):
             continue
         code = str(row.get("symbol") or "").strip()
-        if not re.fullmatch(r"\\d{4}", code):
+        if not re.fullmatch(r"\d{4}", code):
             continue
         if code in seen:
             raise DataValidationError(f"سهمك: رمز مكرر في قائمة أعلى قيمة تداول: {code}.")
@@ -778,8 +778,15 @@ def format_message(signals: list[dict]) -> str:
     )
     if len(diagnostics) > 20:
         diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل GitHub Actions."]
+    universe = MARKET_UNIVERSE_CONTEXT or {}
+    universe_stamp = universe.get("timestamp")
+    universe_line = (
+        f"قائمة المسح: أعلى {universe.get('count', SCAN_SIZE)} سهم بقيمة التداول في تاسي "
+        f"| سهمك | {universe_stamp.strftime('%Y-%m-%d %H:%M %Z') if universe_stamp else 'وقت غير متاح'} "
+        f"| {'بيانات متأخرة' if universe.get('is_delayed', True) else 'بيانات غير مصنفة كتأخير'}"
+    )
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
-    if not signals:
+if not signals:
         return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
                 "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
                 "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
