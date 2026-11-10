@@ -109,13 +109,38 @@ def _saudi_timestamp(value) -> pd.Timestamp:
     return timestamp.tz_convert(TZ)
 
 
+def _sahmk_response_data(payload: dict) -> tuple[dict, dict]:
+    """Return the data object and its envelope for both flat and wrapped API responses."""
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        return nested, payload
+    return payload, payload
+
+
+def _sahmk_timestamp(data: dict, envelope: dict):
+    # Prefer the market-data timestamp. retrievedAt is deliberately not used:
+    # it can be the proxy retrieval time rather than the exchange quote time.
+    return data.get("timestamp") or data.get("updated_at") or envelope.get("timestamp")
+
+
+def _sahmk_delayed(data: dict, envelope: dict) -> bool:
+    value = data.get("is_delayed")
+    if value is None:
+        value = envelope.get("is_delayed")
+    # Fail closed: an unspecified delay flag must never be presented as realtime.
+    return True if value is None else bool(value)
+
+
 def fetch_sahmk_quote(code: str, expected_date) -> dict:
-    """السعر الأساسي للإشارة من سهمك مع فحص تاريخ التحديث."""
-    data = sahmk_get(f"quote/{code}/")
+    """السعر الأساسي للإشارة من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
+    payload = sahmk_get(f"quote/{code}/")
+    data, envelope = _sahmk_response_data(payload)
     price = data.get("price")
-    updated = data.get("updated_at")
+    updated = _sahmk_timestamp(data, envelope)
     if price is None or not updated:
-        raise DataValidationError(f"{code}: سهمك لم يرجع السعر أو updated_at.")
+        raise DataValidationError(
+            f"{code}: استجابة سهمك لا تحتوي price ووقت تحديث السوق (timestamp/updated_at)."
+        )
     try:
         updated_at = _saudi_timestamp(updated)
         price = float(price)
@@ -130,16 +155,17 @@ def fetch_sahmk_quote(code: str, expected_date) -> dict:
     return {
         "price": price,
         "updated_at": updated_at,
-        "is_delayed": bool(data.get("is_delayed", True)),
+        "is_delayed": _sahmk_delayed(data, envelope),
     }
 
 
 def fetch_sahmk_market_summary(expected_date) -> dict:
-    """ملخص تاسي من سهمك مع التحقق من تاريخ التحديث."""
-    data = sahmk_get("market/summary/", params={"index": "TASI"})
-    updated = data.get("timestamp")
+    """ملخص تاسي من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
+    payload = sahmk_get("market/summary/", params={"index": "TASI"})
+    data, envelope = _sahmk_response_data(payload)
+    updated = _sahmk_timestamp(data, envelope)
     if not updated:
-        raise DataValidationError("تاسي: سهمك لم يرجع timestamp.")
+        raise DataValidationError("تاسي: سهمك لم يرجع timestamp أو updated_at لوقت بيانات السوق.")
     try:
         updated_at = _saudi_timestamp(updated)
         index_value = float(data["index_value"])
@@ -154,7 +180,7 @@ def fetch_sahmk_market_summary(expected_date) -> dict:
         "index_value": index_value,
         "change_percent": change_pct,
         "timestamp": updated_at,
-        "is_delayed": bool(data.get("is_delayed", True)),
+        "is_delayed": _sahmk_delayed(data, envelope),
     }
 
 
