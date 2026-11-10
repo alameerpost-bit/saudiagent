@@ -20,11 +20,15 @@ import requests
 import yfinance as yf
 
 # ===================== الإعدادات =====================
-SYMBOLS = {
+# الأسهم العشرة الأساسية تبقى ضمن المسح، وتُستكمل بأعلى الأسهم قيمةً في التداول.
+BASE_SYMBOLS = {
     "2222": "أرامكو", "1120": "الراجحي", "1180": "الأهلي", "1150": "الإنماء",
     "2010": "سابك", "7010": "stc", "1211": "معادن", "2280": "المراعي",
     "5110": "الكهرباء", "2350": "كيان",
 }
+SYMBOLS = BASE_SYMBOLS.copy()  # للتوافق مع الاختبارات والاختبار التاريخي
+ACTIVE_SYMBOLS = SYMBOLS.copy()
+SCAN_SIZE = 50
 CAPITAL = 1000                 # رأس المال بالريال
 RISK_PER_TRADE = 0.01          # حد الخطر الاسمي لكل إشارة قبل توزيع السقف الإجمالي
 MAX_TOTAL_RISK = CAPITAL * 0.01  # إجمالي الخطر الأقصى لجميع الإشارات: 10 ريالات
@@ -253,6 +257,67 @@ def fetch_sahmk_review_quote(code: str, now: datetime) -> dict:
             "is_delayed": _sahmk_delayed(data, envelope)}
 
 
+def fetch_sahmk_top_value_symbols(limit: int = SCAN_SIZE) -> dict:
+    """اكتشف قائمة متجددة من أعلى أسهم تاسي قيمةً في التداول، مع إبقاء الأسهم الأساسية."""
+    payload = sahmk_get("market/value/", params={"limit": limit, "index": "TASI"})
+    data, _ = _sahmk_response_data(payload)
+
+    rows = None
+    for container in (data, payload):
+        if isinstance(container, list):
+            rows = container
+            break
+        if isinstance(container, dict):
+            for key in ("stocks", "results", "items", "companies"):
+                candidate = container.get(key)
+                if isinstance(candidate, list):
+                    rows = candidate
+                    break
+            if rows is not None:
+                break
+            nested = container.get("data")
+            if isinstance(nested, list):
+                rows = nested
+                break
+            if isinstance(nested, dict):
+                for key in ("stocks", "results", "items", "companies"):
+                    candidate = nested.get(key)
+                    if isinstance(candidate, list):
+                        rows = candidate
+                        break
+            if rows is not None:
+                break
+
+    if not isinstance(rows, list):
+        raise DataValidationError("سهمك: استجابة أعلى الأسهم قيمةً في التداول لا تحتوي قائمة أسهم معروفة.")
+    if len(rows) < 40:
+        raise DataValidationError(
+            f"سهمك: أعاد مسار أعلى الأسهم قيمةً {len(rows)} سهماً فقط؛ نحتاج 40 على الأقل لتكوين قائمة تجريبية موثوقة."
+        )
+
+    selected = dict(BASE_SYMBOLS)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_code = row.get("symbol") or row.get("stock_symbol") or row.get("ticker")
+        if raw_code is None:
+            continue
+        code = str(raw_code).strip()
+        if not code.isdigit():
+            continue
+        name = (row.get("name_ar") or row.get("name") or row.get("company_name")
+                or row.get("short_name") or code)
+        selected.setdefault(code, str(name).strip())
+        if len(selected) >= limit:
+            break
+
+    if len(selected) != limit:
+        raise DataValidationError(
+            f"سهمك: تعذر تكوين قائمة من {limit} سهماً صالحاً؛ المتاح {len(selected)} فقط."
+        )
+    return selected
+
+
 def fetch_sahmk_market_summary(expected_date) -> dict:
     """ملخص تاسي من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
     payload = sahmk_get("market/summary/", params={"index": "TASI"})
@@ -466,9 +531,10 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
     candidates = []
     expected = latest_expected_session(local)
-    global MARKET_CONTEXT, MARKET_AUDIT
+    global MARKET_CONTEXT, MARKET_AUDIT, ACTIVE_SYMBOLS
     MARKET_AUDIT = []
-    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(SYMBOLS)} أسهم.")
+    ACTIVE_SYMBOLS = fetch_sahmk_top_value_symbols()
+    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(ACTIVE_SYMBOLS)} سهماً (أعلى قيمة تداول مع الأسهم الأساسية).")
     MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
     MARKET_AUDIT.append({
         "label": "تاسي", "timestamp": MARKET_CONTEXT["timestamp"],
@@ -479,7 +545,7 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
         f"| {'متأخرة' if MARKET_CONTEXT['is_delayed'] else 'لحظية'}"
     )
 
-    for code, name in SYMBOLS.items():
+    for code, name in ACTIVE_SYMBOLS.items():
         try:
             # OHLCV من Yahoo لحساب المؤشرات؛ سعر الإشارة وتوقيته من سهمك.
             df = fetch(code, "1y")
@@ -525,10 +591,15 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
                 "delayed": None, "status": "FAILED", "error": str(exc),
             })
             print(f"[تدقيق البيانات] {name} ({code}): FAILED | {exc}")
-            print_market_audit()
-            raise
+            # فشل سهم منفرد لا يلغي قراءة بقية القائمة؛ لا تُصدر له إشارة.
+            continue
 
     print_market_audit()
+    verified_stocks = sum(item["status"] == "OK" and item["label"] != "تاسي" for item in MARKET_AUDIT)
+    if verified_stocks < 40:
+        raise DataValidationError(
+            f"تغطية المسح غير كافية: تم التحقق من {verified_stocks}/50 سهماً فقط؛ أوقفنا التوصيات."
+        )
     allocated = allocate_positions(candidates)
     if candidates and not allocated:
         raise SignalAllocationError(
@@ -546,15 +617,23 @@ def review_next_session(now: datetime | None = None) -> str:
     expected = latest_expected_session(local)
     candidates = []
     diagnostics = []
-    for code, name in SYMBOLS.items():
-        df = fetch(code, "1y")
+    global ACTIVE_SYMBOLS
+    ACTIVE_SYMBOLS = fetch_sahmk_top_value_symbols()
+    for code, name in ACTIVE_SYMBOLS.items():
+        try:
+            df = fetch(code, "1y")
+        except Exception as exc:
+            diagnostics.append(f"• {name} ({code}): تعذر التحقق من البيانات التاريخية — {exc}")
+            continue
         # Exclude any partial current-day Yahoo candle; use the last completed session only.
         completed = df[[pd.Timestamp(index).date() <= expected for index in df.index]]
         if completed.empty or pd.Timestamp(completed.index[-1]).date() != expected:
-            raise DataValidationError(f"{code}: لا تتوفر شمعة مكتملة لجلسة {expected}.")
+            diagnostics.append(f"• {name} ({code}): لا تتوفر شمعة مكتملة لجلسة {expected}.")
+            continue
         indicators = add_indicators(completed).dropna()
         if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
-            raise DataValidationError(f"{code}: المؤشرات الفنية لجلسة {expected} غير مكتملة.")
+            diagnostics.append(f"• {name} ({code}): المؤشرات الفنية لجلسة {expected} غير مكتملة.")
+            continue
         row = indicators.iloc[-1]
         reasons = buy_signal_reasons(row)
         if reasons:
@@ -607,7 +686,7 @@ def print_market_audit() -> None:
     records = MARKET_AUDIT or []
     ok = sum(item["status"] == "OK" for item in records)
     failed = sum(item["status"] != "OK" for item in records)
-    print(f"[تدقيق البيانات] الملخص: {ok}/{len(SYMBOLS) + 1} ناجح | {failed} فاشل.")
+    print(f"[تدقيق البيانات] الملخص: {ok}/{len(records)} ناجح | {failed} فاشل.")
     for item in records:
         stamp = item["timestamp"]
         stamp_text = stamp.strftime("%Y-%m-%d %H:%M %Z") if stamp is not None else "لا يوجد"
@@ -628,8 +707,13 @@ def format_message(signals: list[dict]) -> str:
         )
     audit = MARKET_AUDIT or []
     verified = sum(item["status"] == "OK" for item in audit)
-    coverage_line = f"تغطية التحقق: {verified}/{len(SYMBOLS) + 1} (تاسي + 10 أسهم)"
+    expected_coverage = len(audit)
+    coverage_line = f"تغطية التحقق: {verified}/{expected_coverage} (تاسي + حتى 50 سهماً)"
     diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
+    diagnostics.extend(
+        f"• {item['label']}: تعذر التحقق — {item.get('error', 'سبب غير محدد')}"
+        for item in audit if item.get('status') == 'FAILED'
+    )
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
         return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
