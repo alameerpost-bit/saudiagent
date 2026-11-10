@@ -8,6 +8,7 @@
     python bot.py daemon     # انتظار وقت الإرسال اليومي (16:00 بتوقيت الرياض)
 """
 import os
+import re
 import sys
 import time
 from datetime import datetime, time as time_of_day, timedelta
@@ -42,6 +43,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SAHMK_API_KEY = os.getenv("SAHMK_API_KEY")
 SAHMK_BASE_URL = os.getenv("SAHMK_BASE_URL", "https://api.sahmk.sa/api/v1")
 SAHMK_TIMEOUT = 20
+# سهمك يفرض حدوداً على معدل الطلبات؛ نباعد بين طلبات الأسهم لتقليل HTTP 429.
+SAHMK_MIN_REQUEST_INTERVAL = float(os.getenv("SAHMK_MIN_REQUEST_INTERVAL", "6"))
+SAHMK_MAX_RETRIES = int(os.getenv("SAHMK_MAX_RETRIES", "2"))
+_SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
 
 
@@ -53,20 +58,65 @@ class SignalAllocationError(RuntimeError):
     """توجد إشارات فنية لكن لا يمكن تخصيص سهم واحد لها ضمن القيود."""
 
 
+def _sahmk_wait_for_request_slot() -> None:
+    """فرض فاصل أدنى بين طلبات سهمك ضمن عملية التشغيل الواحدة."""
+    global _SAHMK_LAST_REQUEST_AT
+    now = time.monotonic()
+    if _SAHMK_LAST_REQUEST_AT is not None:
+        remaining = SAHMK_MIN_REQUEST_INTERVAL - (now - _SAHMK_LAST_REQUEST_AT)
+        if remaining > 0:
+            time.sleep(remaining)
+    _SAHMK_LAST_REQUEST_AT = time.monotonic()
+
+
+def _sahmk_retry_delay(response, payload) -> float:
+    """استخراج مهلة إعادة المحاولة من Retry-After أو رسالة سهمك."""
+    headers = getattr(response, "headers", {}) or {}
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            pass
+    message = str(payload or "")
+    match = re.search(r"(?:available|retry|wait)\\s+in\\s+(\\d+(?:\\.\\d+)?)\\s+seconds?", message, re.I)
+    if match:
+        return max(0.0, float(match.group(1)))
+    return 2.0
+
+
 def sahmk_get(path: str, params: dict | None = None) -> dict:
-    """طلب موثق من سهمك؛ لا ننتقل إلى Yahoo عند فشل المصدر الأساسي."""
+    """طلب موثق من سهمك مع تنظيم المعدل وإعادة محاولة 429؛ لا ننتقل إلى Yahoo عند فشل المصدر الأساسي."""
     if not SAHMK_API_KEY:
         raise DataValidationError("مفتاح SAHMK_API_KEY غير مضبوط في GitHub Secrets.")
-    try:
-        response = requests.get(
-            f"{SAHMK_BASE_URL.rstrip('/')}/{path.lstrip('/')}",
-            headers={"X-API-Key": SAHMK_API_KEY},
-            params=params,
-            timeout=SAHMK_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        raise DataValidationError(f"سهمك: تعذر جلب {path} (HTTP {status or 'network'}): {exc}") from exc
+
+    response = None
+    for attempt in range(SAHMK_MAX_RETRIES + 1):
+        _sahmk_wait_for_request_slot()
+        try:
+            response = requests.get(
+                f"{SAHMK_BASE_URL.rstrip('/')}/{path.lstrip('/')}",
+                headers={"X-API-Key": SAHMK_API_KEY},
+                params=params,
+                timeout=SAHMK_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            raise DataValidationError(f"سهمك: تعذر جلب {path} (HTTP {status or 'network'}): {exc}") from exc
+
+        if getattr(response, "status_code", None) == 429 and attempt < SAHMK_MAX_RETRIES:
+            try:
+                rate_payload = response.json()
+            except (TypeError, ValueError):
+                rate_payload = None
+            delay = _sahmk_retry_delay(response, rate_payload)
+            print(
+                f"[سهمك] حد الطلبات لطلب {path}؛ إعادة المحاولة بعد {delay:g} ثانية "
+                f"({attempt + 1}/{SAHMK_MAX_RETRIES})."
+            )
+            time.sleep(delay)
+            continue
+        break
 
     status = getattr(response, "status_code", None)
     try:
