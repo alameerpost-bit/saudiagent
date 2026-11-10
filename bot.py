@@ -655,6 +655,8 @@ def review_next_session(now: datetime | None = None) -> str:
             "",
         ])
     if diagnostics:
+        if len(diagnostics) > 20:
+            diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل التشغيل."]
         lines.extend(["أسباب عدم إدراج الأسهم الأخرى:", *diagnostics])
     return "\n".join(lines)
 
@@ -687,6 +689,12 @@ def format_message(signals: list[dict]) -> str:
     verified = sum(item["status"] == "OK" for item in audit)
     coverage_line = f"تغطية المسح: {verified}/{len(SYMBOLS) + 1} (تاسي + {len(SYMBOLS)} سهماً) | حد التغطية الأدنى: {MIN_SCAN_COVERAGE:.0%}"
     diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
+    diagnostics.extend(
+        f"• {item['label']}: تعذر التحقق — {item.get('error', 'سبب غير محدد')}"
+        for item in audit if item.get('status') == 'FAILED'
+    )
+    if len(diagnostics) > 20:
+        diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل GitHub Actions."]
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
         return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
