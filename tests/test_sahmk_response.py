@@ -179,6 +179,30 @@ class SahmkResponseTests(unittest.TestCase):
             ):
                 bot.sahmk_get("quote/2222/")
 
+    def test_market_audit_prints_each_verified_instrument(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        stamp = bot._saudi_timestamp("2026-08-12T12:20:00+00:00")
+        bot.MARKET_AUDIT = [
+            {"label": "تاسي", "timestamp": stamp, "delayed": True, "status": "OK"},
+            {"label": "أرامكو (2222)", "timestamp": stamp, "delayed": True, "status": "OK"},
+        ]
+        output = StringIO()
+        with redirect_stdout(output):
+            bot.print_market_audit()
+        captured = output.getvalue()
+        self.assertIn("2/11 ناجح", captured)
+        self.assertIn("تاسي | OK", captured)
+        self.assertIn("أرامكو (2222) | OK", captured)
+
+    def test_telegram_message_includes_coverage_when_no_signals(self):
+        bot.MARKET_CONTEXT = {}
+        bot.MARKET_AUDIT = [
+            {"label": "تاسي", "timestamp": None, "delayed": True, "status": "OK"},
+        ]
+        message = bot.format_message([])
+        self.assertIn("تغطية التحقق: 1/11", message)
+
 
 if __name__ == "__main__":
     unittest.main()
