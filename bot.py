@@ -315,7 +315,7 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
     candidates = []
     expected = latest_expected_session(local)
     global MARKET_CONTEXT
-    # تاسي وسعر كل سهم من سهمك؛ Yahoo يستخدم كسجل يومي لحساب المؤشرات والمقارنة فقط.
+    # تاسي وسعر كل سهم من سهمك؛ Yahoo يوفّر OHLCV التاريخية اللازمة للمؤشرات إلى أن تتوفر باقة سهمك التاريخية.
     MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
     for code, name in SYMBOLS.items():
         # أي نقص في سهم واحد أو في تحديثه من سهمك يوقف العملية كلها.
