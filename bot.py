@@ -677,12 +677,14 @@ def review_next_session(now: datetime | None = None) -> str:
             "",
         ])
     if diagnostics:
+        if len(diagnostics) > 20:
+            diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل التشغيل."]
         lines.extend(["أسباب عدم إدراج الأسهم الأخرى:", *diagnostics])
     return "\n".join(lines)
 
 
 def print_market_audit() -> None:
-    """سجل موجز قابل للتدقيق لتغطية تاسي والأسهم العشرة."""
+    """سجل موجز قابل للتدقيق لتغطية تاسي وقائمة المسح الحالية."""
     records = MARKET_AUDIT or []
     ok = sum(item["status"] == "OK" for item in records)
     failed = sum(item["status"] != "OK" for item in records)
@@ -714,6 +716,8 @@ def format_message(signals: list[dict]) -> str:
         f"• {item['label']}: تعذر التحقق — {item.get('error', 'سبب غير محدد')}"
         for item in audit if item.get('status') == 'FAILED'
     )
+    if len(diagnostics) > 20:
+        diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل GitHub Actions."]
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
         return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
