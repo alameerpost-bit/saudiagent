@@ -786,7 +786,7 @@ def format_message(signals: list[dict]) -> str:
         f"| {'بيانات متأخرة' if universe.get('is_delayed', True) else 'بيانات غير مصنفة كتأخير'}"
     )
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
-if not signals:
+    if not signals:
         return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
                 "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
                 "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
