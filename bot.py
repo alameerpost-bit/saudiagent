@@ -48,6 +48,7 @@ SAHMK_MIN_REQUEST_INTERVAL = float(os.getenv("SAHMK_MIN_REQUEST_INTERVAL", "6"))
 SAHMK_MAX_RETRIES = int(os.getenv("SAHMK_MAX_RETRIES", "2"))
 _SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
+MARKET_AUDIT = []
 
 
 class DataValidationError(RuntimeError):
@@ -414,40 +415,83 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
     candidates = []
     expected = latest_expected_session(local)
-    global MARKET_CONTEXT
-    # تاسي وسعر كل سهم من سهمك؛ Yahoo يوفّر OHLCV التاريخية اللازمة للمؤشرات إلى أن تتوفر باقة سهمك التاريخية.
+    global MARKET_CONTEXT, MARKET_AUDIT
+    MARKET_AUDIT = []
+    print(f"[تدقيق البيانات] الجلسة المتوقعة: {expected}; تاسي + {len(SYMBOLS)} أسهم.")
     MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
+    MARKET_AUDIT.append({
+        "label": "تاسي", "timestamp": MARKET_CONTEXT["timestamp"],
+        "delayed": MARKET_CONTEXT["is_delayed"], "status": "OK",
+    })
+    print(
+        f"[تدقيق البيانات] تاسي: OK | {MARKET_CONTEXT['timestamp'].strftime('%Y-%m-%d %H:%M %Z')} "
+        f"| {'متأخرة' if MARKET_CONTEXT['is_delayed'] else 'لحظية'}"
+    )
+
     for code, name in SYMBOLS.items():
-        # أي نقص في سهم واحد أو في تحديثه من سهمك يوقف العملية كلها.
-        df = fetch(code, "1y")
-        validate_session_data(df, code, local)
-        indicators = add_indicators(df).dropna()
-        if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
-            raise DataValidationError(f"{code}: تعذر التحقق من مؤشرات جلسة {expected}.")
-        quote = fetch_sahmk_quote(code, expected)
-        r = indicators.iloc[-1]
-        yahoo_close = float(r.Close)
-        if abs(quote["price"] - yahoo_close) / yahoo_close > 0.05:
-            raise DataValidationError(
-                f"{code}: اختلاف سعر سهمك عن سجل Yahoo بأكثر من 5%؛ أوقفنا الإشارة للمراجعة."
+        try:
+            # OHLCV من Yahoo لحساب المؤشرات؛ سعر الإشارة وتوقيته من سهمك.
+            df = fetch(code, "1y")
+            validate_session_data(df, code, local)
+            indicators = add_indicators(df).dropna()
+            if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
+                raise DataValidationError(f"{code}: تعذر التحقق من مؤشرات جلسة {expected}.")
+            quote = fetch_sahmk_quote(code, expected)
+            r = indicators.iloc[-1]
+            yahoo_close = float(r.Close)
+            if abs(quote["price"] - yahoo_close) / yahoo_close > 0.05:
+                raise DataValidationError(
+                    f"{code}: اختلاف سعر سهمك عن سجل Yahoo بأكثر من 5%؛ أوقفنا الإشارة للمراجعة."
+                )
+            MARKET_AUDIT.append({
+                "label": f"{name} ({code})", "timestamp": quote["updated_at"],
+                "delayed": quote["is_delayed"], "status": "OK",
+            })
+            print(
+                f"[تدقيق البيانات] {name} ({code}): OK | "
+                f"{quote['updated_at'].strftime('%Y-%m-%d %H:%M %Z')} | "
+                f"{'متأخرة' if quote['is_delayed'] else 'لحظية'}"
             )
-        if not buy_signal(r):
-            continue
-        entry = quote["price"]
-        stop = entry - ATR_STOP_MULT * float(r.atr)
-        target = entry + ATR_TARGET_MULT * float(r.atr)
-        estimated_loss_per_share(entry, stop)
-        candidates.append(dict(
-            code=code, name=name, entry=entry, stop=stop, target=target,
-            rsi=float(r.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
-            quote_time=quote["updated_at"], delayed=quote["is_delayed"],
-        ))
+            if not buy_signal(r):
+                continue
+            entry = quote["price"]
+            stop = entry - ATR_STOP_MULT * float(r.atr)
+            target = entry + ATR_TARGET_MULT * float(r.atr)
+            estimated_loss_per_share(entry, stop)
+            candidates.append(dict(
+                code=code, name=name, entry=entry, stop=stop, target=target,
+                rsi=float(r.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
+                quote_time=quote["updated_at"], delayed=quote["is_delayed"],
+            ))
+        except Exception as exc:
+            MARKET_AUDIT.append({
+                "label": f"{name} ({code})", "timestamp": None,
+                "delayed": None, "status": "FAILED", "error": str(exc),
+            })
+            print(f"[تدقيق البيانات] {name} ({code}): FAILED | {exc}")
+            print_market_audit()
+            raise
+
+    print_market_audit()
     allocated = allocate_positions(candidates)
     if candidates and not allocated:
         raise SignalAllocationError(
             "رُصدت إشارات فنية لكن تعذر تخصيص سهم واحد ضمن سقفي المخاطرة والمراكز؛ لم تُرسل نتيجة فارغة."
         )
     return allocated
+
+
+def print_market_audit() -> None:
+    """سجل موجز قابل للتدقيق لتغطية تاسي والأسهم العشرة."""
+    records = MARKET_AUDIT or []
+    ok = sum(item["status"] == "OK" for item in records)
+    failed = sum(item["status"] != "OK" for item in records)
+    print(f"[تدقيق البيانات] الملخص: {ok}/{len(SYMBOLS) + 1} ناجح | {failed} فاشل.")
+    for item in records:
+        stamp = item["timestamp"]
+        stamp_text = stamp.strftime("%Y-%m-%d %H:%M %Z") if stamp is not None else "لا يوجد"
+        delay = ("متأخرة" if item["delayed"] else "لحظية") if item["delayed"] is not None else "غير محدد"
+        print(f"[تدقيق البيانات] {item['label']} | {item['status']} | {stamp_text} | {delay}")
 
 
 def format_message(signals: list[dict]) -> str:
@@ -466,7 +510,7 @@ def format_message(signals: list[dict]) -> str:
                 "لا توجد فرص شراء بعد التحقق من بيانات سهمك وجلسة جميع الأسهم.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 إشارات تداول - {today}", market_line,
+    lines = [f"📊 إشارات تداول - {today}", market_line, coverage_line,
              f"(مؤشرات فنية من Yahoo، وسعر الإشارة من سهمك؛ جلسة {signals[0]['date']})", ""]
     for s in signals:
         lines += [
