@@ -51,6 +51,53 @@ class SahmkResponseTests(unittest.TestCase):
         self.assertEqual(result["timestamp"].date(), date(2026, 8, 12))
         self.assertFalse(result["is_delayed"])
 
+    def test_parses_wrapped_quote_payload_with_market_timestamp(self):
+        payload = {
+            "provider": "SAHMK",
+            "retrievedAt": "2026-08-12T12:25:00+00:00",
+            "data": {
+                "symbol": "2222",
+                "price": 26.6,
+                "timestamp": "2026-08-12T12:20:00+00:00",
+                "is_delayed": True,
+            },
+        }
+        with patch.object(bot, "sahmk_get", return_value=payload):
+            result = bot.fetch_sahmk_quote("2222", date(2026, 8, 12))
+
+        self.assertEqual(result["price"], 26.6)
+        self.assertEqual(result["updated_at"].strftime("%H:%M"), "15:20")
+        self.assertTrue(result["is_delayed"])
+
+    def test_parses_wrapped_tasi_market_summary(self):
+        payload = {
+            "provider": "SAHMK",
+            "retrievedAt": "2026-08-12T12:25:00+00:00",
+            "data": {
+                "index": "TASI",
+                "timestamp": "2026-08-12T12:20:00+00:00",
+                "index_value": 10844.12,
+                "index_change_percent": 0.1,
+                "is_delayed": False,
+            },
+        }
+        with patch.object(bot, "sahmk_get", return_value=payload):
+            result = bot.fetch_sahmk_market_summary(date(2026, 8, 12))
+
+        self.assertEqual(result["index_value"], 10844.12)
+        self.assertEqual(result["change_percent"], 0.1)
+        self.assertEqual(result["timestamp"].date(), date(2026, 8, 12))
+        self.assertFalse(result["is_delayed"])
+
+    def test_does_not_use_proxy_retrieval_time_as_quote_timestamp(self):
+        payload = {
+            "retrievedAt": "2026-08-12T12:25:00+00:00",
+            "data": {"symbol": "2222", "price": 26.6},
+        }
+        with patch.object(bot, "sahmk_get", return_value=payload):
+            with self.assertRaisesRegex(bot.DataValidationError, "وقت تحديث السوق"):
+                bot.fetch_sahmk_quote("2222", date(2026, 8, 12))
+
     def test_reports_structured_http_error_code_and_message(self):
         response = self.response(
             429,
