@@ -39,6 +39,10 @@ TASI_SYMBOL = "^TASI.SR"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SAHMK_API_KEY = os.getenv("SAHMK_API_KEY")
+SAHMK_BASE_URL = os.getenv("SAHMK_BASE_URL", "https://api.sahmk.sa/api/v1")
+SAHMK_TIMEOUT = 20
+MARKET_CONTEXT = None
 
 
 class DataValidationError(RuntimeError):
@@ -47,6 +51,87 @@ class DataValidationError(RuntimeError):
 
 class SignalAllocationError(RuntimeError):
     """توجد إشارات فنية لكن لا يمكن تخصيص سهم واحد لها ضمن القيود."""
+
+
+def sahmk_get(path: str, params: dict | None = None) -> dict:
+    """طلب موثق من سهمك؛ لا ننتقل إلى Yahoo عند فشل المصدر الأساسي."""
+    if not SAHMK_API_KEY:
+        raise DataValidationError("مفتاح SAHMK_API_KEY غير مضبوط في GitHub Secrets.")
+    try:
+        response = requests.get(
+            f"{SAHMK_BASE_URL.rstrip('/')}/{path.lstrip('/')}",
+            headers={"X-API-Key": SAHMK_API_KEY},
+            params=params,
+            timeout=SAHMK_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        raise DataValidationError(f"سهمك: تعذر جلب {path} (HTTP {status or 'network'}): {exc}") from exc
+    except ValueError as exc:
+        raise DataValidationError(f"سهمك: استجابة غير صالحة من {path}.") from exc
+    if not isinstance(payload, dict):
+        raise DataValidationError(f"سهمك: تنسيق استجابة غير متوقع من {path}.")
+    if payload.get("error"):
+        raise DataValidationError(f"سهمك: {payload['error']}")
+    return payload
+
+
+def _saudi_timestamp(value) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize(TZ)
+    return timestamp.tz_convert(TZ)
+
+
+def fetch_sahmk_quote(code: str, expected_date) -> dict:
+    """السعر الأساسي للإشارة من سهمك مع فحص تاريخ التحديث."""
+    data = sahmk_get(f"quote/{code}/")
+    price = data.get("price")
+    updated = data.get("updated_at")
+    if price is None or not updated:
+        raise DataValidationError(f"{code}: سهمك لم يرجع السعر أو updated_at.")
+    try:
+        updated_at = _saudi_timestamp(updated)
+        price = float(price)
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(f"{code}: سعر أو توقيت سهمك غير صالح.") from exc
+    if not pd.notna(price) or price <= 0:
+        raise DataValidationError(f"{code}: سعر سهمك غير صالح.")
+    if updated_at.date() != expected_date:
+        raise DataValidationError(
+            f"{code}: آخر تحديث من سهمك {updated_at.date()} وليس جلسة {expected_date}؛ أوقفنا الإشارات."
+        )
+    return {
+        "price": price,
+        "updated_at": updated_at,
+        "is_delayed": bool(data.get("is_delayed", True)),
+    }
+
+
+def fetch_sahmk_market_summary(expected_date) -> dict:
+    """ملخص تاسي من سهمك مع التحقق من تاريخ التحديث."""
+    data = sahmk_get("market/summary/", params={"index": "TASI"})
+    updated = data.get("timestamp")
+    if not updated:
+        raise DataValidationError("تاسي: سهمك لم يرجع timestamp.")
+    try:
+        updated_at = _saudi_timestamp(updated)
+        index_value = float(data["index_value"])
+        change_pct = float(data["index_change_percent"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataValidationError("تاسي: استجابة سهمك ناقصة أو غير صالحة.") from exc
+    if updated_at.date() != expected_date:
+        raise DataValidationError(
+            f"تاسي: آخر تحديث من سهمك {updated_at.date()} وليس جلسة {expected_date}؛ أوقفنا الإشارات."
+        )
+    return {
+        "index_value": index_value,
+        "change_percent": change_pct,
+        "timestamp": updated_at,
+        "is_delayed": bool(data.get("is_delayed", True)),
+    }
 
 
 # ===================== البيانات والمؤشرات =====================
@@ -89,7 +174,7 @@ def validate_session_data(df: pd.DataFrame, code: str,
 def fetch(code: str, period: str = "2y") -> pd.DataFrame:
     symbol = code if code.startswith("^") else f"{code}.SR"
     try:
-        df = yf.Ticker(symbol).history(period=period, auto_adjust=True)
+        df = yf.Ticker(symbol).history(period=period, auto_adjust=False)
     except Exception as exc:
         raise DataValidationError(f"{code}: تعذر جلب البيانات: {exc}") from exc
     if df is None or df.empty:
@@ -229,24 +314,33 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
     candidates = []
     expected = latest_expected_session(local)
+    global MARKET_CONTEXT
+    # تاسي وسعر كل سهم من سهمك؛ Yahoo يستخدم كسجل يومي لحساب المؤشرات والمقارنة فقط.
+    MARKET_CONTEXT = fetch_sahmk_market_summary(expected)
     for code, name in SYMBOLS.items():
-        # أي خطأ أو نقص في رمز واحد يوقف العملية كلها؛ لا نرسل نتيجة ناقصة على أنها لا فرص.
+        # أي نقص في سهم واحد أو في تحديثه من سهمك يوقف العملية كلها.
         df = fetch(code, "1y")
         validate_session_data(df, code, local)
         indicators = add_indicators(df).dropna()
         if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
             raise DataValidationError(f"{code}: تعذر التحقق من مؤشرات جلسة {expected}.")
+        quote = fetch_sahmk_quote(code, expected)
         r = indicators.iloc[-1]
+        yahoo_close = float(r.Close)
+        if abs(quote["price"] - yahoo_close) / yahoo_close > 0.05:
+            raise DataValidationError(
+                f"{code}: اختلاف سعر سهمك عن سجل Yahoo بأكثر من 5%؛ أوقفنا الإشارة للمراجعة."
+            )
         if not buy_signal(r):
             continue
-        entry = float(r.Close)
+        entry = quote["price"]
         stop = entry - ATR_STOP_MULT * float(r.atr)
         target = entry + ATR_TARGET_MULT * float(r.atr)
-        # يتحقق هنا من صلاحية الأسعار قبل أن يصل المرشح إلى مرحلة التوزيع.
         estimated_loss_per_share(entry, stop)
         candidates.append(dict(
             code=code, name=name, entry=entry, stop=stop, target=target,
             rsi=float(r.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
+            quote_time=quote["updated_at"], delayed=quote["is_delayed"],
         ))
     allocated = allocate_positions(candidates)
     if candidates and not allocated:
@@ -258,13 +352,22 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
 
 def format_message(signals: list[dict]) -> str:
     today = datetime.now(TZ).strftime("%Y-%m-%d")
+    market = MARKET_CONTEXT or {}
+    market_line = "تاسي: بيانات سهمك غير متاحة."
+    if market:
+        delay_label = "متأخرة" if market["is_delayed"] else "لحظية"
+        market_line = (
+            f"تاسي: {market['index_value']:.2f} "
+            f"({market['change_percent']:+.2f}%) | {delay_label} "
+            f"| تحديث: {market['timestamp'].strftime('%Y-%m-%d %H:%M %Z')}"
+        )
     if not signals:
-        return (f"📊 إشارات تداول - {today}\n"
-                "لا توجد فرص شراء بعد التحقق من بيانات جلسة التداول المتوقعة لجميع الأسهم.")
+        return (f"📊 إشارات تداول - {today}\n{market_line}\n"
+                "لا توجد فرص شراء بعد التحقق من بيانات سهمك وجلسة جميع الأسهم.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 إشارات تداول - {today}",
-             f"(بناءً على إغلاق {signals[0]['date']})", ""]
+    lines = [f"📊 إشارات تداول - {today}", market_line,
+             f"(مؤشرات فنية من Yahoo، وسعر الإشارة من سهمك؛ جلسة {signals[0]['date']})", ""]
     for s in signals:
         lines += [
             f"🟢 {s['name']} ({s['code']})",
@@ -272,7 +375,8 @@ def format_message(signals: list[dict]) -> str:
             f"وقف الخسارة: {s['stop']:.2f}",
             f"الهدف: {s['target']:.2f}",
             f"الكمية المقترحة: {s['shares']} سهم (~{s['value']:,.2f} ريال)",
-            f"RSI: {s['rsi']:.0f}", "",
+            f"RSI: {s['rsi']:.0f}",
+            f"سعر سهمك محدث: {s['quote_time'].strftime('%H:%M %Z')} ({'متأخر' if s['delayed'] else 'لحظي'})", "",
         ]
     lines += [
         f"إجمالي المخاطرة التقديرية (مع الرسوم والانزلاق): {total_risk:.2f} من 10 ريالات",
