@@ -945,7 +945,7 @@ def main() -> None:
         send(review_next_session())
     elif cmd == "daemon":
         daemon()
-    else
+    else:
         # الاستثناء قبل send يمنع إرسال «لا توجد فرص» عند فشل التحقق.
         send(format_message(generate_signals()))
 
