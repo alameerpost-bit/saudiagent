@@ -505,8 +505,11 @@ def format_message(signals: list[dict]) -> str:
             f"({market['change_percent']:+.2f}%) | {delay_label} "
             f"| تحديث: {market['timestamp'].strftime('%Y-%m-%d %H:%M %Z')}"
         )
+    audit = MARKET_AUDIT or []
+    verified = sum(item["status"] == "OK" for item in audit)
+    coverage_line = f"تغطية التحقق: {verified}/{len(SYMBOLS) + 1} (تاسي + 10 أسهم)"
     if not signals:
-        return (f"📊 إشارات تداول - {today}\n{market_line}\n"
+        return (f"📊 إشارات تداول - {today}\\n{market_line}\\n{coverage_line}\\n"
                 "لا توجد فرص شراء بعد التحقق من بيانات سهمك وجلسة جميع الأسهم.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
