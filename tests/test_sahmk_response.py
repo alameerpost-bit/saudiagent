@@ -253,7 +253,7 @@ class SahmkResponseTests(unittest.TestCase):
         with redirect_stdout(output):
             bot.print_market_audit()
         captured = output.getvalue()
-        self.assertIn("2/11 ناجح", captured)
+        self.assertIn("2/2 ناجح", captured)
         self.assertIn("تاسي | OK", captured)
         self.assertIn("أرامكو (2222) | OK", captured)
 
@@ -263,7 +263,29 @@ class SahmkResponseTests(unittest.TestCase):
             {"label": "تاسي", "timestamp": None, "delayed": True, "status": "OK"},
         ]
         message = bot.format_message([])
-        self.assertIn("تغطية التحقق: 1/11", message)
+        self.assertIn("تغطية التحقق: 1/1", message)
+
+    def test_top_value_scan_keeps_base_symbols_and_fills_to_50(self):
+        rows = [
+            {"symbol": str(1000 + i), "name": f"شركة {i}"}
+            for i in range(50)
+        ]
+        with patch.object(bot, "sahmk_get", return_value={"stocks": rows}) as get:
+            symbols = bot.fetch_sahmk_top_value_symbols()
+        self.assertEqual(len(symbols), 50)
+        for code in bot.BASE_SYMBOLS:
+            self.assertIn(code, symbols)
+        get.assert_called_once_with(
+            "market/value/", params={"limit": 50, "index": "TASI"}
+        )
+
+    def test_top_value_scan_rejects_incomplete_provider_list(self):
+        with patch.object(
+            bot, "sahmk_get",
+            return_value={"stocks": [{"symbol": str(1000 + i)} for i in range(10)]},
+        ):
+            with self.assertRaisesRegex(bot.DataValidationError, "40 على الأقل"):
+                bot.fetch_sahmk_top_value_symbols()
 
 
 if __name__ == "__main__":
