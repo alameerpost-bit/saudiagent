@@ -529,11 +529,11 @@ def format_message(signals: list[dict]) -> str:
     verified = sum(item["status"] == "OK" for item in audit)
     coverage_line = f"تغطية التحقق: {verified}/{len(SYMBOLS) + 1} (تاسي + 10 أسهم)"
     diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
-    diagnostics_text = ("\\nأسباب عدم الدخول:\\n" + "\\n".join(diagnostics)) if diagnostics else ""
+    diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
-        return (f"📊 تحليل فرص اليوم التالي - {today}\\n{market_line}\\n{coverage_line}\\n"
+        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{coverage_line}\n"
                 "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
-                "\\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
+                "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
     lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, coverage_line,
