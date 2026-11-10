@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import Mock, patch
 
 import bot
@@ -19,6 +19,22 @@ class SahmkResponseTests(unittest.TestCase):
         else:
             response.json.return_value = payload
         return response
+
+    def test_review_accepts_quote_approximately_15_minutes_delayed(self):
+        now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
+        timestamp = bot._saudi_timestamp("2026-08-12T10:00:00+03:00")
+        bot.validate_review_quote_timestamp(timestamp, now)
+
+    def test_review_rejects_stale_quote_outside_expected_delay_window(self):
+        now = datetime.fromisoformat("2026-08-12T10:15:00+03:00")
+        timestamp = bot._saudi_timestamp("2026-08-12T09:50:00+03:00")
+        with self.assertRaisesRegex(bot.DataValidationError, "عمر السعر"):
+            bot.validate_review_quote_timestamp(timestamp, now)
+
+    def test_review_command_rejects_time_before_1015(self):
+        now = datetime.fromisoformat("2026-08-12T10:14:00+03:00")
+        with self.assertRaisesRegex(bot.DataValidationError, "10:15"):
+            bot.review_next_session(now)
 
     def test_reads_documented_flat_quote_payload(self):
         payload = {
