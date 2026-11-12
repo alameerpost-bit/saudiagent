@@ -8,6 +8,7 @@
     python bot.py review     # مراجعة التوصيات عند 10:15 ببيانات متأخرة 15 دقيقة
     python bot.py daemon     # انتظار وقت الإرسال اليومي (16:00 بتوقيت الرياض)
 """
+import json
 import os
 import re
 import sys
@@ -68,6 +69,7 @@ SAHMK_TIMEOUT = 20
 # سهمك يفرض حدوداً على معدل الطلبات؛ نباعد بين طلبات الأسهم لتقليل HTTP 429.
 SAHMK_MIN_REQUEST_INTERVAL = float(os.getenv("SAHMK_MIN_REQUEST_INTERVAL", "6"))
 SAHMK_MAX_RETRIES = int(os.getenv("SAHMK_MAX_RETRIES", "2"))
+SIGNALS_STATE_PATH = os.getenv("SIGNALS_STATE_PATH", "data/previous_signals.json")
 _SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
 MARKET_AUDIT = []
@@ -663,91 +665,101 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
     return allocated
 
 
+def save_previous_signals(signals: list[dict]) -> None:
+    """Persist the exact closing recommendations for the next morning review."""
+    directory = os.path.dirname(SIGNALS_STATE_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    payload = {
+        "session_date": datetime.now(TZ).date().isoformat(),
+        "generated_at": datetime.now(TZ).isoformat(),
+        "source": "daily_close_recommendations",
+        "signals": [
+            {
+                key: (value.isoformat() if hasattr(value, "isoformat") else value)
+                for key, value in item.items()
+                if key in {
+                    "code", "name", "entry", "stop", "target", "shares",
+                    "value", "risk", "commitment", "rsi", "date"
+                }
+            }
+            for item in signals
+        ],
+    }
+    with open(SIGNALS_STATE_PATH, "w", encoding="utf-8") as state_file:
+        json.dump(payload, state_file, ensure_ascii=False, indent=2)
+
+
+def load_previous_signals(expected_date) -> list[dict]:
+    """Load only the recommendations saved by the preceding closing run."""
+    if not os.path.exists(SIGNALS_STATE_PATH):
+        raise DataValidationError(
+            "لا يوجد ملف توصيات الإغلاق السابقة؛ لن ننشئ قائمة بديلة في المراجعة الصباحية."
+        )
+    try:
+        with open(SIGNALS_STATE_PATH, "r", encoding="utf-8") as state_file:
+            payload = json.load(state_file)
+    except (OSError, ValueError) as exc:
+        raise DataValidationError(f"تعذر قراءة ملف توصيات الإغلاق السابقة: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("source") != "daily_close_recommendations":
+        raise DataValidationError("ملف توصيات الإغلاق السابقة غير صالح أو مصدره غير معروف.")
+    if payload.get("session_date") != expected_date.isoformat():
+        raise DataValidationError(
+            f"تاريخ التوصيات المحفوظة ({payload.get('session_date')}) لا يطابق جلسة الإغلاق المرجعية ({expected_date})."
+        )
+    signals = payload.get("signals")
+    if not isinstance(signals, list):
+        raise DataValidationError("ملف توصيات الإغلاق لا يحتوي قائمة أسهم صالحة.")
+    return signals
+
+
 def review_next_session(now: datetime | None = None) -> str:
-    """Review prior-close setups at 10:15 using quotes delayed by about 15 minutes."""
+    """Review exactly the prior-close recommendations; never rescan or replace symbols."""
     local = _local_now(now)
     if local.weekday() not in TRADING_DAYS or (local.hour, local.minute) < REVIEW_TIME:
         raise DataValidationError("مراجعة التوصيات متاحة في أيام التداول ابتداءً من 10:15 بتوقيت الرياض.")
 
     expected = latest_expected_session(local)
-    candidates = []
-    diagnostics = []
-    scan_ok = 0
-    active_symbols = fetch_sahmk_top_value_symbols(review_now=local)
-    for code, name in active_symbols.items():
-        try:
-            df = fetch(code, "1y")
-            completed = df[[pd.Timestamp(index).date() <= expected for index in df.index]]
-            if completed.empty or pd.Timestamp(completed.index[-1]).date() != expected:
-                raise DataValidationError(f"{code}: لا تتوفر شمعة مكتملة لجلسة {expected}.")
-            indicators = add_indicators(completed).dropna()
-            if indicators.empty or pd.Timestamp(indicators.index[-1]).date() != expected:
-                raise DataValidationError(f"{code}: المؤشرات الفنية لجلسة {expected} غير مكتملة.")
-            row = indicators.iloc[-1]
-            scan_ok += 1
-            reasons = buy_signal_reasons(row)
-            if reasons:
-                diagnostics.append(f"• {name} ({code}): {'؛ '.join(reasons)}")
-                continue
-            reference = float(row.Close)
-            stop = reference - ATR_STOP_MULT * float(row.atr)
-            target = reference + ATR_TARGET_MULT * float(row.atr)
-            estimated_loss_per_share(reference, stop)
-            candidates.append(dict(
-                code=code, name=name, entry=reference, stop=stop, target=target,
-                rsi=float(row.rsi), date=pd.Timestamp(indicators.index[-1]).date(),
-                avg_value_20=float(row.avg_value_20), volr=float(row.volr),
-            ))
-        except Exception as exc:
-            diagnostics.append(f"• {name} ({code}): تعذر التحقق من البيانات ({exc})")
-
-    scan_coverage = scan_ok / max(1, len(active_symbols))
-    if scan_coverage < MIN_SCAN_COVERAGE:
-        failed_details = [
-            item for item in diagnostics
-            if "تعذر التحقق من البيانات" in item
-        ]
-        details_text = " | ".join(failed_details[:5])
-        details_suffix = f" أبرز أسباب الفشل: {details_text}" if details_text else ""
-        raise DataValidationError(
-            f"تغطية مراجعة السوق {scan_coverage:.0%} أقل من الحد الأدنى "
-            f"{MIN_SCAN_COVERAGE:.0%}؛ أوقفنا المراجعة.{details_suffix}"
-        )
-    ranked_candidates = select_top_candidates(candidates)
-    allocated = allocate_positions(ranked_candidates)
+    previous_signals = load_previous_signals(expected)
     lines = [
-        f"🕙 مراجعة توصيات اليوم التالي - {local.strftime('%Y-%m-%d %H:%M')} بتوقيت الرياض",
-        f"مرجع التحليل: إغلاق جلسة {expected}",
+        f"🕙 مراجعة توصيات الإغلاق - {local.strftime('%Y-%m-%d %H:%M')} بتوقيت الرياض",
+        f"مرجع التوصيات: إغلاق جلسة {expected}",
+        "المراجعة تتابع رموز رسالة الإغلاق السابقة نفسها؛ لا يتم إنشاء قائمة أسهم جديدة.",
         "تنبيه: تأخر الأسعار 15 دقيقة؛ قراءة 10:15 تعكس تقريباً السوق حتى 10:00.",
         "هذه مراجعة سعرية فقط؛ القرار والتنفيذ يدويان، ولا توجد أوامر آلية.",
-        f"قائمة المسح: أعلى {SCAN_SIZE} سهم بقيمة التداول في تاسي من سهمك؛ وقت البيانات الأقدم: {MARKET_UNIVERSE_CONTEXT['timestamp'].strftime('%Y-%m-%d %H:%M %Z')} ({'متأخرة' if MARKET_UNIVERSE_CONTEXT['is_delayed'] else 'غير مصنفة كتأخير'}).",
         "",
     ]
-    if not allocated:
-        lines.append("لا توجد توصيات سابقة مستوفية لشروط الدخول عند إغلاق الجلسة السابقة.")
-    for item in allocated:
-        quote = fetch_sahmk_review_quote(item["code"], local)
-        change_pct = (quote["price"] / item["entry"] - 1) * 100
-        if quote["price"] >= item["target"]:
+    if not previous_signals:
+        lines.append("لا توجد توصيات سابقة مستوفية للشروط عند إغلاق الجلسة المرجعية؛ لا توجد أسهم لمراجعتها.")
+        return "\n".join(lines)
+
+    for item in previous_signals:
+        required = ("code", "name", "entry", "stop", "target")
+        if any(key not in item for key in required):
+            raise DataValidationError("ملف توصيات الإغلاق يحتوي توصية ناقصة؛ أوقفنا المراجعة.")
+        code = str(item["code"])
+        quote = fetch_sahmk_review_quote(code, local)
+        entry = float(item["entry"])
+        stop = float(item["stop"])
+        target = float(item["target"])
+        change_pct = (quote["price"] / entry - 1) * 100
+        if quote["price"] >= target:
             status = "وصل السعر إلى الهدف المرجعي؛ لا تطارد السهم."
-        elif quote["price"] <= item["stop"]:
+        elif quote["price"] <= stop:
             status = "وصل السعر إلى وقف الخسارة المرجعي أو دونه؛ ألغِ فكرة الدخول."
-        elif quote["price"] <= item["entry"]:
+        elif quote["price"] <= entry:
             status = "السعر عند أو دون مرجع الإغلاق؛ راجع سبب التراجع والسيولة قبل القرار."
         else:
             status = "السعر أعلى من مرجع الإغلاق؛ قيّم الارتفاع ولا تطارد السهم."
         lines.extend([
-            f"• {item['name']} ({item['code']})",
-            f"  مرجع الإغلاق: {item['entry']:.2f} | السعر المتأخر: {quote['price']:.2f} ({change_pct:+.2f}%)",
+            f"• {item['name']} ({code})",
+            f"  مرجع الإغلاق: {entry:.2f} | السعر المتأخر: {quote['price']:.2f} ({change_pct:+.2f}%)",
             f"  وقت السعر: {quote['updated_at'].strftime('%H:%M %Z')} | {'متأخر' if quote['is_delayed'] else 'غير مصنف كتأخير'}",
-            f"  وقف الخسارة المرجعي: {item['stop']:.2f} | الهدف المرجعي: {item['target']:.2f}",
+            f"  وقف الخسارة المرجعي: {stop:.2f} | الهدف المرجعي: {target:.2f}",
+            f"  الكمية التي أوصت بها رسالة الإغلاق: {item.get('shares', 'غير محددة')}",
             f"  التقييم: {status}",
             "",
         ])
-    if diagnostics:
-        if len(diagnostics) > 20:
-            diagnostics = diagnostics[:20] + [f"• تم اختصار {len(diagnostics) - 20} ملاحظة إضافية؛ التفاصيل الكاملة في سجل التشغيل."]
-        lines.extend(["أسباب عدم إدراج الأسهم الأخرى:", *diagnostics])
     return "\n".join(lines)
 
 
@@ -1135,7 +1147,9 @@ def main() -> None:
         daemon()
     else:
         # الاستثناء قبل send يمنع إرسال «لا توجد فرص» عند فشل التحقق.
-        send(format_message(generate_signals()))
+        signals = generate_signals()
+        save_previous_signals(signals)
+        send(format_message(signals))
 
 
 if __name__ == "__main__":
