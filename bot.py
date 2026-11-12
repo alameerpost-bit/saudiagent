@@ -703,8 +703,15 @@ def review_next_session(now: datetime | None = None) -> str:
 
     scan_coverage = scan_ok / max(1, len(active_symbols))
     if scan_coverage < MIN_SCAN_COVERAGE:
+        failed_details = [
+            item for item in diagnostics
+            if "تعذر التحقق من البيانات" in item
+        ]
+        details_text = " | ".join(failed_details[:5])
+        details_suffix = f" أبرز أسباب الفشل: {details_text}" if details_text else ""
         raise DataValidationError(
-            f"تغطية مراجعة السوق {scan_coverage:.0%} أقل من الحد الأدنى {MIN_SCAN_COVERAGE:.0%}؛ أوقفنا المراجعة."
+            f"تغطية مراجعة السوق {scan_coverage:.0%} أقل من الحد الأدنى "
+            f"{MIN_SCAN_COVERAGE:.0%}؛ أوقفنا المراجعة.{details_suffix}"
         )
     ranked_candidates = select_top_candidates(candidates)
     allocated = allocate_positions(ranked_candidates)
@@ -824,7 +831,14 @@ def send(text: str) -> None:
         json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=30,
     )
     r.raise_for_status()
-    print("تم الإرسال.")
+    try:
+        payload = r.json()
+    except ValueError as exc:
+        raise RuntimeError("Telegram أعاد استجابة غير صالحة بعد طلب الإرسال.") from exc
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        description = payload.get("description", "رفض Telegram الرسالة.") if isinstance(payload, dict) else "استجابة Telegram غير متوقعة."
+        raise RuntimeError(f"فشل تأكيد Telegram للإرسال: {description}")
+    print("تم تأكيد الإرسال من Telegram.")
 
 
 # ===================== الاختبار التاريخي =====================
@@ -1097,7 +1111,26 @@ def main() -> None:
     if cmd == "backtest":
         run_backtest()
     elif cmd == "review":
-        send(review_next_session())
+        try:
+            send(review_next_session())
+        except Exception as exc:
+            reason = str(exc).strip() or exc.__class__.__name__
+            if len(reason) > 2500:
+                reason = reason[:2500] + "…"
+            alert = (
+                "⚠️ تعذر إكمال مراجعة التداول الصباحية.\n"
+                f"السبب: {reason}\n"
+                "لم تصدر توصيات دخول، ولم يتم تنفيذ أي أوامر. "
+                "راجع سجل GitHub Actions للتفاصيل."
+            )
+            try:
+                send(alert)
+            except Exception as alert_exc:
+                print(
+                    f"[فشل إرسال تنبيه المراجعة إلى Telegram] {alert_exc}",
+                    file=sys.stderr,
+                )
+            raise
     elif cmd == "daemon":
         daemon()
     else:
