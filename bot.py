@@ -1146,8 +1146,21 @@ def main() -> None:
     elif cmd == "daemon":
         daemon()
     else:
+        # التشغيل المبكر أو في يوم غير تداولي حالة طبيعية؛ لا تُعامل كفشل للـ workflow.
+        now = _local_now()
+        if now.weekday() not in TRADING_DAYS:
+            print("[تخطي طبيعي] لا توجد جلسة تداول اليوم؛ لم تُصدر توصيات ولم تُرسل رسالة.")
+            return
+        if now.time() < time_of_day(*SEND_TIME):
+            ready = f"{SEND_TIME[0]:02d}:{SEND_TIME[1]:02d}"
+            print(
+                f"[تخطي طبيعي] لم يحِن موعد التوصيات بعد؛ "
+                f"تبدأ الإتاحة عند {ready} بتوقيت الرياض. "
+                "لم تُصدر توصيات ولم تُرسل رسالة."
+            )
+            return
         # الاستثناء قبل send يمنع إرسال «لا توجد فرص» عند فشل التحقق.
-        signals = generate_signals()
+        signals = generate_signals(now)
         save_previous_signals(signals)
         send(format_message(signals))
 
