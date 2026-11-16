@@ -1,7 +1,7 @@
 name: Daily signals
 on:
   schedule:
-    - cron: "0 13 * * 0-4"   # 16:00 بتوقيت الرياض، الأحد-الخميس (UTC)
+    - cron: "15 13 * * 0-4"  # 16:15 بتوقيت الرياض، الأحد-الخميس (UTC)
   workflow_dispatch:
 permissions:
   contents: write
