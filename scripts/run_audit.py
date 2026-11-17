@@ -49,7 +49,9 @@ class RunAudit:
                 "universe_count": None,
                 "scanned_count": 0,
                 "rejected_count": 0,
+                "rejected_symbols": [],
                 "no_signal_count": 0,
+                "no_signal_symbols": [],
                 "scan_coverage": None,
                 "scan_coverage_decision": "unavailable",
                 "rejection_reasons": {},
@@ -118,13 +120,21 @@ class RunAudit:
                 "accepted" if coverage >= 0.80 else "below_minimum"
             )
         reasons = Counter()
+        rejected_symbols = []
+        no_signal_symbols = []
         for item in stock_records:
+            match = re.search(r"\((\d{4})\)$", str(item.get("label") or ""))
+            symbol = match.group(1) if match else None
             if item.get("status") != "OK":
-                reason = item.get("error") or "data_validation_failed"
-                reasons[self.clean_error(reason)[:180]] += 1
+                reason = self.clean_error(item.get("error") or "data_validation_failed")
+                reasons[reason[:180]] += 1
+                rejected_symbols.append({"symbol": symbol, "reason": reason[:180]})
             if item.get("signal_status") == "NO_SIGNAL":
+                no_signal_symbols.append(symbol)
                 for reason in item.get("reasons") or ["technical_conditions_not_met"]:
                     reasons[str(reason)[:180]] += 1
+        self.data["data"]["rejected_symbols"] = rejected_symbols
+        self.data["data"]["no_signal_symbols"] = no_signal_symbols
         self.data["data"]["rejection_reasons"] = dict(reasons)
         self.data["recommendations"]["count"] = namespace.get("_AUDIT_RECOMMENDATION_COUNT", 0)
         if self.data["recommendations"]["count"]:
