@@ -76,6 +76,7 @@ _SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
 MARKET_AUDIT = []
 MARKET_UNIVERSE_CONTEXT = None
+SAHMK_LAST_RETRIEVED_AT = None
 _AUDIT_RECOMMENDATION_COUNT = 0
 
 
@@ -115,6 +116,7 @@ def _sahmk_retry_delay(response, payload) -> float:
 
 
 def sahmk_get(path: str, params: dict | None = None) -> dict:
+    global SAHMK_LAST_RETRIEVED_AT
     """طلب موثق من سهمك مع تنظيم المعدل وإعادة محاولة 429؛ لا ننتقل إلى Yahoo عند فشل المصدر الأساسي."""
     if not SAHMK_API_KEY:
         raise DataValidationError("مفتاح SAHMK_API_KEY غير مضبوط في GitHub Secrets.")
@@ -178,6 +180,7 @@ def sahmk_get(path: str, params: dict | None = None) -> dict:
         detail = detail or "استجابة خطأ من الواجهة."
         status_text = f"HTTP {status}" if status is not None else "خطأ"
         raise DataValidationError(f"سهمك: تعذر جلب {path} ({status_text}): {detail}")
+    SAHMK_LAST_RETRIEVED_AT = datetime.now(TZ).isoformat()
     return payload
 
 
