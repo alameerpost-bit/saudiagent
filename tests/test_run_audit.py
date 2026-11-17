@@ -39,6 +39,22 @@ class RunAuditTests(unittest.TestCase):
         self.assertEqual(audit.data["data"]["rejected_count"], 1)
         self.assertTrue(audit.data["data"]["delayed"])
 
+    def test_does_not_invent_retrieval_timestamp(self):
+        audit = RunAudit()
+        audit.capture({
+            "SAHMK_LAST_QUOTE_TIMESTAMP": "2026-11-17T10:00:00+03:00",
+            "SAHMK_LAST_QUOTE_DELAYED": True,
+            "SAHMK_LAST_RETRIEVED_AT": None,
+            "MARKET_AUDIT": [],
+        })
+        self.assertEqual(
+            audit.data["data"]["quote_timestamp"], "2026-11-17T10:00:00+03:00"
+        )
+        self.assertEqual(
+            audit.data["data"]["freshness_decision"], "validated_for_review_window"
+        )
+        self.assertIsNone(audit.data["data"]["retrieved_at"])
+
     def test_redacts_configured_secrets(self):
         os.environ["SAHMK_API_KEY"] = "secret-value"
         try:
