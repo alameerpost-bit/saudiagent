@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - feature/sahmk-primary-market-data
+      - feature/saudi-agent-v2-foundation
   pull_request:
     branches:
       - main
