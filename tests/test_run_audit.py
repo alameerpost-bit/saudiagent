@@ -30,7 +30,7 @@ class RunAuditTests(unittest.TestCase):
             "MARKET_AUDIT": [
                 {"label": "تاسي", "status": "OK"},
                 {"label": "سهم أ", "status": "OK"},
-                {"label": "سهم ب", "status": "FAILED", "error": "quote unavailable"},
+                {"label": "سهم ب (0002)", "status": "FAILED", "error": "quote unavailable"},
             ],
             "_AUDIT_RECOMMENDATION_COUNT": 1,
         })
