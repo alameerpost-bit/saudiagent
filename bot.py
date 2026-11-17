@@ -1179,7 +1179,7 @@ def daemon() -> None:
     print("البوت يعمل... (Ctrl+C للإيقاف)")
     while True:
         now = datetime.now(TZ)
-        due = (now.weekday() in TRADING_DAYS
+        due = (is_saudi_trading_day(now.date())
                and (now.hour, now.minute) >= SEND_TIME
                and last_sent != now.date())
         if due:
