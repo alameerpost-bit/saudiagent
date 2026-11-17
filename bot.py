@@ -729,13 +729,22 @@ def load_previous_signals(expected_date) -> list[dict]:
     return signals
 
 
+def previous_trading_session(day):
+    """Return the immediately preceding Saudi trading session, independent of run time."""
+    day = day - timedelta(days=1)
+    while day.weekday() not in TRADING_DAYS:
+        day -= timedelta(days=1)
+    return day
+
+
 def review_next_session(now: datetime | None = None) -> str:
     """Review exactly the prior-close recommendations; never rescan or replace symbols."""
     local = _local_now(now)
     if local.weekday() not in TRADING_DAYS or (local.hour, local.minute) < REVIEW_TIME:
         raise DataValidationError("مراجعة التوصيات متاحة في أيام التداول ابتداءً من 10:15 بتوقيت الرياض.")
-
-    expected = latest_expected_session(local)
+    # A delayed GitHub schedule must never reinterpret today's session close as
+    # the prior close. The quote freshness validator separately rejects late prices.
+    expected = previous_trading_session(local.date())
     previous_signals = load_previous_signals(expected)
     lines = [
         f"🕙 مراجعة توصيات الإغلاق - {local.strftime('%Y-%m-%d %H:%M')} بتوقيت الرياض",
