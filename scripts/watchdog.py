@@ -12,7 +12,8 @@ TZ = ZoneInfo("Asia/Riyadh")
 API = os.environ.get("GH_API_URL", "https://api.github.com").rstrip("/")
 REPO = os.environ.get("GH_REPOSITORY")
 TOKEN = os.environ.get("GH_TOKEN")
-WORKFLOW = "daily.yml"
+WORKFLOW = os.environ.get("SAUDI_AGENT_WATCHDOG_WORKFLOW", "daily.yml")
+TASK_LABEL = os.environ.get("SAUDI_AGENT_WATCHDOG_LABEL", "توصيات الإغلاق")
 
 
 def request_json(url, method="GET", payload=None):
@@ -98,7 +99,10 @@ def main():
     query = urllib.parse.urlencode({"branch": "main", "per_page": 100})
     url = f"{API}/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?{query}"
     data = request_json(url)
-    action, run = choose_action(data.get("workflow_runs", []), today)
+    runs = data.get("workflow_runs")
+    if not isinstance(runs, list) or data.get("total_count", len(runs)) > len(runs) or len(runs) >= 100:
+        raise RuntimeError("قائمة تشغيل GitHub غير مكتملة؛ أوقفنا الاسترداد التلقائي منعاً لإطلاق تشغيل مكرر.")
+    action, run = choose_action(runs, today)
     run_url = (run or {}).get("html_url", "")
 
     if action in ("done", "wait", "wait_fallback"):
@@ -112,7 +116,7 @@ def main():
             "inputs": {"watchdog_fallback": "true"},
         })
         telegram(
-            "⚠️ مراقب Saudi Agent: لم يُعثر على تشغيل التوصيات اليوم "
+            "⚠️ مراقب Saudi Agent: لم يُعثر على تشغيل المراجعة/التوصيات اليوم "
             f"({today}) حتى موعد الفحص.\n"
             "تم إطلاق تشغيل احتياطي واحد؛ لن يكرر المراقب الإطلاق إذا ظهر تشغيل "
             "watchdog-fallback لليوم نفسه.\nلم يتم تنفيذ أي أوامر تداول."
