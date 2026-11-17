@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ class RunAudit:
             "run_id": os.getenv("GITHUB_RUN_ID") or None,
             "run_attempt": int(os.getenv("GITHUB_RUN_ATTEMPT", "1")),
             "workflow": workflow or os.getenv("GITHUB_WORKFLOW") or "local",
+            "operation": sys.argv[1] if len(sys.argv) > 1 else "run",
             "commit_sha": os.getenv("GITHUB_SHA") or None,
             "started_at": now.isoformat(),
             "finished_at": None,
@@ -91,6 +93,7 @@ class RunAudit:
             self.data["data"]["quote_timestamp"] = market.get("timestamp").isoformat()
             self.data["data"]["delayed"] = market.get("is_delayed")
             self.data["data"]["freshness_decision"] = "validated_for_session"
+        self.data["data"]["retrieved_at"] = datetime.now(_RIYADH).isoformat()
         stock_records = [item for item in records if item.get("label") != "تاسي"]
         self.data["data"]["scanned_count"] = len(stock_records)
         self.data["data"]["rejected_count"] = sum(
@@ -110,16 +113,20 @@ class RunAudit:
                 "emitted" if self.data["telegram"]["status"] == "sent" else "generated_not_confirmed_sent"
             )
         elif self.data["recommendations"]["emission_decision"] == "not_attempted":
-            self.data["recommendations"]["emission_decision"] = "not_emitted"
-            self.data["recommendations"]["no_emission_reason"] = (
-                "no_recommendations_or_non_trading_skip"
-            )
+            if self.data["operation"] == "review":
+                self.data["recommendations"]["emission_decision"] = "not_applicable_review_only"
+            else:
+                self.data["recommendations"]["emission_decision"] = "not_emitted"
+                self.data["recommendations"]["no_emission_reason"] = (
+                    "no_recommendations_or_non_trading_skip"
+                )
 
     def write(self, path=None):
         self.data["finished_at"] = datetime.now(_RIYADH).isoformat()
         if self.data["status"] == "running":
             self.data["status"] = "success"
-        self.data["data"]["retrieved_at"] = self.data["finished_at"]
+        if self.data["data"]["retrieved_at"] is None:
+            self.data["data"]["retrieved_at"] = self.data["finished_at"]
         destination = Path(path or os.getenv("SAUDI_AGENT_AUDIT_PATH", "data/audit/run.json"))
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(
