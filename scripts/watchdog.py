@@ -92,6 +92,18 @@ def choose_action(runs, today):
     return "dispatch_fallback", None
 
 
+def validated_run_list(data):
+    """Refuse recovery decisions when GitHub returned a partial or malformed page."""
+    if not isinstance(data, dict):
+        raise RuntimeError("استجابة GitHub لقائمة التشغيل غير صالحة.")
+    runs = data.get("workflow_runs")
+    if (not isinstance(runs, list)
+            or data.get("total_count", len(runs)) > len(runs)
+            or len(runs) >= 100):
+        raise RuntimeError("قائمة تشغيل GitHub غير مكتملة؛ أوقفنا الاسترداد التلقائي منعاً لإطلاق تشغيل مكرر.")
+    return runs
+
+
 def main():
     if not REPO:
         raise RuntimeError("GH_REPOSITORY غير مضبوط.")
@@ -99,9 +111,7 @@ def main():
     query = urllib.parse.urlencode({"branch": "main", "per_page": 100})
     url = f"{API}/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?{query}"
     data = request_json(url)
-    runs = data.get("workflow_runs")
-    if not isinstance(runs, list) or data.get("total_count", len(runs)) > len(runs) or len(runs) >= 100:
-        raise RuntimeError("قائمة تشغيل GitHub غير مكتملة؛ أوقفنا الاسترداد التلقائي منعاً لإطلاق تشغيل مكرر.")
+    runs = validated_run_list(data)
     action, run = choose_action(runs, today)
     run_url = (run or {}).get("html_url", "")
 
