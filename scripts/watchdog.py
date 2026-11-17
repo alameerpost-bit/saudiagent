@@ -5,7 +5,7 @@ import os
 import sys
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Asia/Riyadh")
@@ -49,6 +49,13 @@ def telegram(message):
         result = json.loads(response.read().decode())
     if result.get("ok") is not True:
         raise RuntimeError("Telegram لم يؤكد إرسال التنبيه.")
+
+
+def created_window(day):
+    """Limit the API query to one Riyadh calendar day, independent of run history."""
+    start = datetime(day.year, day.month, day.day, tzinfo=TZ)
+    end = start + timedelta(days=1)
+    return f"{start.isoformat()}..{end.isoformat()}"
 
 
 def local_run_date(run):
@@ -108,7 +115,11 @@ def main():
     if not REPO:
         raise RuntimeError("GH_REPOSITORY غير مضبوط.")
     today = datetime.now(TZ).date()
-    query = urllib.parse.urlencode({"branch": "main", "per_page": 100})
+    query = urllib.parse.urlencode({
+        "branch": "main",
+        "per_page": 100,
+        "created": created_window(today),
+    })
     url = f"{API}/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?{query}"
     data = request_json(url)
     runs = validated_run_list(data)
