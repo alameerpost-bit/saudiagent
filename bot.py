@@ -395,13 +395,36 @@ def _local_now(now: datetime | None = None) -> datetime:
     return now.astimezone(TZ)
 
 
+def is_saudi_trading_day(day):
+    """Use the versioned Saudi Exchange holiday calendar; fail closed outside coverage."""
+    calendar_path = os.path.join(os.path.dirname(__file__), "data", "saudi_exchange_holidays.json")
+    try:
+        with open(calendar_path, "r", encoding="utf-8") as calendar_file:
+            calendar = json.load(calendar_file)
+        start = datetime.fromisoformat(calendar["coverage_start"]).date()
+        end = datetime.fromisoformat(calendar["coverage_end"]).date()
+        if day < start or day > end:
+            raise DataValidationError(
+                f"تقويم تداول يغطي الفترة {start} إلى {end} فقط؛ يلزم تحديث التقويم قبل احتساب الجلسات."
+            )
+        if day.weekday() not in TRADING_DAYS:
+            return False
+        return not any(
+            datetime.fromisoformat(item["start"]).date() <= day
+            <= datetime.fromisoformat(item["end"]).date()
+            for item in calendar["holidays"]
+        )
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise DataValidationError(f"تعذر قراءة تقويم عطلات تداول السعودية: {exc}") from exc
+
+
 def latest_expected_session(now: datetime | None = None):
-    """آخر جلسة كان يفترض اكتمال بياناتها حسب أيام السوق ووقت الإغلاق."""
+    """آخر جلسة تداول سعودية وفق تقويم تداول الرسمي ووقت الإغلاق."""
     local = _local_now(now)
     day = local.date()
-    if day.weekday() in TRADING_DAYS and local.time() < time_of_day(*SEND_TIME):
+    if is_saudi_trading_day(day) and local.time() < time_of_day(*SEND_TIME):
         day -= timedelta(days=1)
-    while day.weekday() not in TRADING_DAYS:
+    while not is_saudi_trading_day(day):
         day -= timedelta(days=1)
     return day
 
@@ -586,7 +609,7 @@ def allocate_positions(candidates: list[dict]) -> list[dict]:
 # ===================== الإشارات اليومية =====================
 def generate_signals(now: datetime | None = None) -> list[dict]:
     local = _local_now(now)
-    if local.weekday() not in TRADING_DAYS or local.time() < time_of_day(*SEND_TIME):
+    if not is_saudi_trading_day(local.date()) or local.time() < time_of_day(*SEND_TIME):
         raise DataValidationError("الإشارات اليومية متاحة فقط بعد 16:00 بتوقيت الرياض في يوم تداول.")
 
     candidates = []
@@ -681,15 +704,23 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
     return allocated
 
 
-def save_previous_signals(signals: list[dict]) -> None:
-    """Persist the exact closing recommendations for the next morning review."""
+def save_previous_signals(signals: list[dict], session_date=None, now=None) -> None:
+    """Persist an explicit successful generation handoff, including provenance."""
+    local = _local_now(now)
+    session = session_date or latest_expected_session(local)
     directory = os.path.dirname(SIGNALS_STATE_PATH)
     if directory:
         os.makedirs(directory, exist_ok=True)
     payload = {
-        "session_date": datetime.now(TZ).date().isoformat(),
-        "generated_at": datetime.now(TZ).isoformat(),
+        "schema_version": 2,
+        "session_date": session.isoformat(),
+        "generated_at": local.isoformat(),
         "source": "daily_close_recommendations",
+        "generation_status": "success",
+        "run_id": os.getenv("GITHUB_RUN_ID"),
+        "run_attempt": int(os.getenv("GITHUB_RUN_ATTEMPT", "1")),
+        "commit_sha": os.getenv("GITHUB_SHA"),
+        "recommendation_count": len(signals),
         "signals": [
             {
                 key: (value.isoformat() if hasattr(value, "isoformat") else value)
@@ -719,6 +750,12 @@ def load_previous_signals(expected_date) -> list[dict]:
         raise DataValidationError(f"تعذر قراءة ملف توصيات الإغلاق السابقة: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("source") != "daily_close_recommendations":
         raise DataValidationError("ملف توصيات الإغلاق السابقة غير صالح أو مصدره غير معروف.")
+    if payload.get("schema_version") != 2 or payload.get("generation_status") != "success":
+        raise DataValidationError("ملف التسليم لا يحمل علامة توليد ناجح بإصدار معتمد.")
+    if not payload.get("run_id") or not payload.get("commit_sha"):
+        raise DataValidationError("ملف التسليم يفتقد معرّف تشغيل GitHub أو SHA المصدر.")
+    if not isinstance(payload.get("recommendation_count"), int):
+        raise DataValidationError("ملف التسليم يفتقد عدد التوصيات الموثق.")
     if payload.get("session_date") != expected_date.isoformat():
         raise DataValidationError(
             f"تاريخ التوصيات المحفوظة ({payload.get('session_date')}) لا يطابق جلسة الإغلاق المرجعية ({expected_date})."
@@ -726,13 +763,19 @@ def load_previous_signals(expected_date) -> list[dict]:
     signals = payload.get("signals")
     if not isinstance(signals, list):
         raise DataValidationError("ملف توصيات الإغلاق لا يحتوي قائمة أسهم صالحة.")
+    if payload["recommendation_count"] != len(signals):
+        raise DataValidationError("عدد التوصيات الموثق لا يطابق محتوى ملف التسليم.")
+    if any(not isinstance(item, dict) or not all(
+        key in item for key in ("code", "name", "entry", "stop", "target")
+    ) for item in signals):
+        raise DataValidationError("ملف التسليم يحتوي توصية ناقصة أو غير صالحة.")
     return signals
 
 
 def previous_trading_session(day):
-    """Return the immediately preceding Saudi trading session, independent of run time."""
+    """Return the immediately preceding session using the official dated holiday calendar."""
     day = day - timedelta(days=1)
-    while day.weekday() not in TRADING_DAYS:
+    while not is_saudi_trading_day(day):
         day -= timedelta(days=1)
     return day
 
@@ -740,7 +783,7 @@ def previous_trading_session(day):
 def review_next_session(now: datetime | None = None) -> str:
     """Review exactly the prior-close recommendations; never rescan or replace symbols."""
     local = _local_now(now)
-    if local.weekday() not in TRADING_DAYS or (local.hour, local.minute) < REVIEW_TIME:
+    if not is_saudi_trading_day(local.date()) or (local.hour, local.minute) < REVIEW_TIME:
         raise DataValidationError("مراجعة التوصيات متاحة في أيام التداول ابتداءً من 10:15 بتوقيت الرياض.")
     # A delayed GitHub schedule must never reinterpret today's session close as
     # the prior close. The quote freshness validator separately rejects late prices.
@@ -1179,7 +1222,7 @@ def main() -> None:
     else:
         # التشغيل المبكر أو في يوم غير تداولي حالة طبيعية؛ لا تُعامل كفشل للـ workflow.
         now = _local_now()
-        if now.weekday() not in TRADING_DAYS:
+        if not is_saudi_trading_day(now.date()):
             print("[تخطي طبيعي] لا توجد جلسة تداول اليوم؛ لم تُصدر توصيات ولم تُرسل رسالة.")
             return
         if now.time() < time_of_day(*SEND_TIME):
@@ -1192,7 +1235,7 @@ def main() -> None:
             return
         # الاستثناء قبل send يمنع إرسال «لا توجد فرص» عند فشل التحقق.
         signals = generate_signals(now)
-        save_previous_signals(signals)
+        save_previous_signals(signals, latest_expected_session(now), now)
         send(format_message(signals))
 
 
