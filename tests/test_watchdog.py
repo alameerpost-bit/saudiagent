@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from scripts.watchdog import choose_action
+from scripts.watchdog import choose_action, validated_run_list
 
 
 TODAY = date(2026, 11, 17)
@@ -21,6 +21,18 @@ def run(run_id, *, status="completed", conclusion="success", name="Daily signals
 
 
 class WatchdogDecisionTests(unittest.TestCase):
+    def test_accept_complete_run_list(self):
+        runs = [run(1)]
+        self.assertEqual(validated_run_list({"total_count": 1, "workflow_runs": runs}), runs)
+
+    def test_refuse_incomplete_run_list_before_recovery(self):
+        with self.assertRaises(RuntimeError):
+            validated_run_list({"total_count": 101, "workflow_runs": [run(1)]})
+
+    def test_refuse_full_page_when_completeness_cannot_be_established(self):
+        with self.assertRaises(RuntimeError):
+            validated_run_list({"total_count": 100, "workflow_runs": [run(i) for i in range(100)]})
+
     def test_dispatch_when_no_run_exists(self):
         self.assertEqual(choose_action([], TODAY)[0], "dispatch_fallback")
 
