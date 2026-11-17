@@ -97,7 +97,7 @@ class RunAudit:
             self.data["data"]["quote_timestamp"] = market.get("timestamp").isoformat()
             self.data["data"]["delayed"] = market.get("is_delayed")
             self.data["data"]["freshness_decision"] = "validated_for_session"
-        self.data["data"]["retrieved_at"] = datetime.now(_RIYADH).isoformat()
+        self.data["data"]["retrieved_at"] = namespace.get("SAHMK_LAST_RETRIEVED_AT")
         stock_records = [item for item in records if item.get("label") != "تاسي"]
         self.data["data"]["scanned_count"] = len(stock_records)
         self.data["data"]["rejected_count"] = sum(
