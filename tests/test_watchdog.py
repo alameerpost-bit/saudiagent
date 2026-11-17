@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from scripts.watchdog import choose_action, validated_run_list
+from scripts.watchdog import choose_action, created_window, validated_run_list
 
 
 TODAY = date(2026, 11, 17)
@@ -21,6 +21,12 @@ def run(run_id, *, status="completed", conclusion="success", name="Daily signals
 
 
 class WatchdogDecisionTests(unittest.TestCase):
+    def test_api_created_filter_is_scoped_to_riyadh_calendar_day(self):
+        self.assertEqual(
+            created_window(TODAY),
+            "2026-11-17T00:00:00+03:00..2026-11-18T00:00:00+03:00",
+        )
+
     def test_accept_complete_run_list(self):
         runs = [run(1)]
         self.assertEqual(validated_run_list({"total_count": 1, "workflow_runs": runs}), runs)
