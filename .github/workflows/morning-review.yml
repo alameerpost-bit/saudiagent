@@ -1,8 +1,20 @@
 name: Morning price review
+run-name: Morning price review ${{ inputs.watchdog_fallback && 'watchdog-fallback' || 'scheduled-or-manual' }}
 on:
   schedule:
     - cron: "15 7 * * 0-4"   # 10:15 بتوقيت الرياض، الأحد-الخميس (UTC)
   workflow_dispatch:
+    inputs:
+      watchdog_fallback:
+        description: "Started by the morning review watchdog"
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: morning-price-review-main
+  cancel-in-progress: false
 jobs:
   review:
     runs-on: ubuntu-latest
