@@ -34,7 +34,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
       - name: Save closing recommendations for morning review
-        if: always()
+        if: success()
         run: |
           if [ -f data/previous_signals.json ]; then
             git config user.name "github-actions[bot]"
