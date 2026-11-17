@@ -1197,8 +1197,12 @@ def main() -> None:
     if cmd == "backtest":
         run_backtest()
     elif cmd == "review":
+        review_now = _local_now()
+        if not is_saudi_trading_day(review_now.date()):
+            print("[تخطي طبيعي] لا توجد جلسة تداول سعودية اليوم؛ لا توجد مراجعة ولا تنبيه.")
+            return
         try:
-            send(review_next_session())
+            send(review_next_session(review_now))
         except Exception as exc:
             reason = str(exc).strip() or exc.__class__.__name__
             if len(reason) > 2500:
