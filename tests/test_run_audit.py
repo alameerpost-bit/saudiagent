@@ -37,6 +37,9 @@ class RunAuditTests(unittest.TestCase):
         self.assertEqual(audit.data["data"]["universe_count"], 50)
         self.assertEqual(audit.data["data"]["scanned_count"], 2)
         self.assertEqual(audit.data["data"]["rejected_count"], 1)
+        self.assertEqual(
+            audit.data["data"]["rejected_symbols"][0]["symbol"], "0002"
+        )
         self.assertTrue(audit.data["data"]["delayed"])
 
     def test_does_not_invent_retrieval_timestamp(self):
