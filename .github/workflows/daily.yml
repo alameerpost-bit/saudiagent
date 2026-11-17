@@ -1,10 +1,20 @@
 name: Daily signals
+run-name: Daily signals ${{ inputs.watchdog_fallback && 'watchdog-fallback' || 'scheduled-or-manual' }}
 on:
   schedule:
     - cron: "15 13 * * 0-4"  # 16:15 بتوقيت الرياض، الأحد-الخميس (UTC)
   workflow_dispatch:
+    inputs:
+      watchdog_fallback:
+        description: "Started by the schedule watchdog"
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: write
+concurrency:
+  group: daily-signals-main
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -16,20 +26,55 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python bot.py run
         env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_SHA: ${{ github.sha }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
       - name: Save closing recommendations for morning review
-        if: always()
+        if: success()
+        env:
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_COMMIT_SHA: ${{ github.sha }}
         run: |
-          if [ -f data/previous_signals.json ]; then
+          if python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path("data/previous_signals.json")
+          if not path.exists():
+              raise SystemExit(1)
+          try:
+              state = json.loads(path.read_text(encoding="utf-8"))
+          except (OSError, ValueError):
+              raise SystemExit(1)
+          valid = (
+              state.get("schema_version") == 2
+              and state.get("generation_status") == "success"
+              and state.get("run_id") == os.environ["CURRENT_RUN_ID"]
+              and state.get("commit_sha") == os.environ["CURRENT_COMMIT_SHA"]
+              and isinstance(state.get("signals"), list)
+              and state.get("recommendation_count") == len(state["signals"])
+          )
+          raise SystemExit(0 if valid else 1)
+          PY
+          then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add data/previous_signals.json
             if ! git diff --cached --quiet; then
-              git commit -m "Save closing recommendations for morning review"
+              git commit -m "Save verified closing recommendations for morning review"
               git push
             fi
           else
-            echo "No newly generated recommendations state to save."
+            echo "No verified handoff from this exact successful run; leaving prior state untouched."
           fi
+      - name: Upload run audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saudi-agent-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/audit/run.json
+          if-no-files-found: warn
+          retention-days: 30

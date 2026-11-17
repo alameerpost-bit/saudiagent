@@ -1,0 +1,32 @@
+name: Morning review watchdog
+on:
+  schedule:
+    - cron: "45 7 * * 0-4" # 10:45 بتوقيت الرياض، بعد موعد المراجعة
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: saudi-agent-workflow-watchdog
+  cancel-in-progress: false
+
+jobs:
+  check-morning-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Inspect morning review and recover safely
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_API_URL: ${{ github.api_url }}
+          SAUDI_AGENT_WATCHDOG_WORKFLOW: morning-review.yml
+          SAUDI_AGENT_WATCHDOG_LABEL: "المراجعة الصباحية"
+        run: python scripts/watchdog.py

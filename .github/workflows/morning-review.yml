@@ -1,8 +1,20 @@
 name: Morning price review
+run-name: Morning price review ${{ inputs.watchdog_fallback && 'watchdog-fallback' || 'scheduled-or-manual' }}
 on:
   schedule:
     - cron: "15 7 * * 0-4"   # 10:15 بتوقيت الرياض، الأحد-الخميس (UTC)
   workflow_dispatch:
+    inputs:
+      watchdog_fallback:
+        description: "Started by the morning review watchdog"
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: morning-price-review-main
+  cancel-in-progress: false
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -14,6 +26,18 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python bot.py review
         env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_SHA: ${{ github.sha }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
+      - name: Upload run audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saudi-agent-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/audit/run.json
+          if-no-files-found: warn
+          retention-days: 30
