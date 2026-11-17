@@ -14,6 +14,18 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python bot.py review
         env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_SHA: ${{ github.sha }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
+      - name: Upload run audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saudi-agent-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/audit/run.json
+          if-no-files-found: warn
+          retention-days: 30
