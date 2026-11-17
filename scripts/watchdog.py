@@ -116,7 +116,7 @@ def main():
             "inputs": {"watchdog_fallback": "true"},
         })
         telegram(
-            "⚠️ مراقب Saudi Agent: لم يُعثر على تشغيل المراجعة/التوصيات اليوم "
+            f"⚠️ مراقب Saudi Agent: لم يُعثر على تشغيل {TASK_LABEL} اليوم "
             f"({today}) حتى موعد الفحص.\n"
             "تم إطلاق تشغيل احتياطي واحد؛ لن يكرر المراقب الإطلاق إذا ظهر تشغيل "
             "watchdog-fallback لليوم نفسه.\nلم يتم تنفيذ أي أوامر تداول."
@@ -130,7 +130,7 @@ def main():
         )
         request_json(retry_url, method="POST")
         telegram(
-            "⚠️ تعثر تشغيل توصيات Saudi Agent.\n"
+            f"⚠️ تعثر تشغيل Saudi Agent ({TASK_LABEL}).\n"
             f"الحالة: {run.get('conclusion')} | المحاولة: {run.get('run_attempt', 1)}\n"
             "طلب المراقب إعادة المهام الفاشلة مرة واحدة.\n"
             f"التشغيل: {run_url}\nلم يتم تنفيذ أي أوامر تداول."
@@ -139,7 +139,7 @@ def main():
         return
 
     telegram(
-        "🚨 تعثر تشغيل توصيات Saudi Agent ولم تتم إعادة المحاولة تلقائياً.\n"
+        f"🚨 تعثر تشغيل Saudi Agent ({TASK_LABEL}) ولم تتم إعادة المحاولة تلقائياً.\n"
         f"السبب: {action}\nالتشغيل: {run_url}\n"
         "يرجى مراجعة GitHub Actions. لم يتم تنفيذ أي أوامر تداول."
     )
@@ -155,7 +155,7 @@ if __name__ == "__main__":
         print(f"Watchdog failed: {exc}", file=sys.stderr)
         try:
             telegram(
-                "🚨 تعذر على مراقب Saudi Agent التحقق من تشغيل التوصيات.\n"
+                f"🚨 تعذر على مراقب Saudi Agent التحقق من تشغيل {TASK_LABEL}.\n"
                 f"السبب: {str(exc)[:1000]}\nيرجى فحص Schedule watchdog."
             )
         except Exception as alert_exc:
