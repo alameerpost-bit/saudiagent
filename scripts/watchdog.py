@@ -10,12 +10,14 @@ from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Asia/Riyadh")
 API = os.environ.get("GH_API_URL", "https://api.github.com").rstrip("/")
-REPO = os.environ["GH_REPOSITORY"]
-TOKEN = os.environ["GH_TOKEN"]
+REPO = os.environ.get("GH_REPOSITORY")
+TOKEN = os.environ.get("GH_TOKEN")
 WORKFLOW = "daily.yml"
 
 
 def request_json(url, method="GET", payload=None):
+    if not TOKEN:
+        raise RuntimeError("GH_TOKEN غير مضبوط.")
     data = None if payload is None else json.dumps(payload).encode()
     headers = {
         "Accept": "application/vnd.github+json",
@@ -90,6 +92,8 @@ def choose_action(runs, today):
 
 
 def main():
+    if not REPO:
+        raise RuntimeError("GH_REPOSITORY غير مضبوط.")
     today = datetime.now(TZ).date()
     query = urllib.parse.urlencode({"branch": "main", "per_page": 100})
     url = f"{API}/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?{query}"
