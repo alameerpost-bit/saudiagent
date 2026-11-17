@@ -41,6 +41,7 @@ class RunAudit:
             "status": "running",
             "data": {
                 "provider": "SAHMK",
+                "technical_data_provider": "Yahoo Finance",
                 "quote_timestamp": None,
                 "retrieved_at": None,
                 "delayed": None,
@@ -48,6 +49,9 @@ class RunAudit:
                 "universe_count": None,
                 "scanned_count": 0,
                 "rejected_count": 0,
+                "no_signal_count": 0,
+                "scan_coverage": None,
+                "scan_coverage_decision": "unavailable",
                 "rejection_reasons": {},
             },
             "recommendations": {
@@ -99,13 +103,24 @@ class RunAudit:
         self.data["data"]["rejected_count"] = sum(
             item.get("status") != "OK" for item in stock_records
         )
+        self.data["data"]["no_signal_count"] = sum(
+            item.get("signal_status") == "NO_SIGNAL" for item in stock_records
+        )
+        universe_count = self.data["data"]["universe_count"]
+        if universe_count:
+            coverage = sum(item.get("status") == "OK" for item in stock_records) / universe_count
+            self.data["data"]["scan_coverage"] = round(coverage, 4)
+            self.data["data"]["scan_coverage_decision"] = (
+                "accepted" if coverage >= 0.80 else "below_minimum"
+            )
         reasons = Counter()
         for item in stock_records:
             if item.get("status") != "OK":
                 reason = item.get("error") or "data_validation_failed"
                 reasons[self.clean_error(reason)[:180]] += 1
-            for reason in item.get("reasons") or []:
-                reasons[str(reason)[:180]] += 1
+            if item.get("signal_status") == "NO_SIGNAL":
+                for reason in item.get("reasons") or ["technical_conditions_not_met"]:
+                    reasons[str(reason)[:180]] += 1
         self.data["data"]["rejection_reasons"] = dict(reasons)
         self.data["recommendations"]["count"] = namespace.get("_AUDIT_RECOMMENDATION_COUNT", 0)
         if self.data["recommendations"]["count"]:
@@ -125,8 +140,6 @@ class RunAudit:
         self.data["finished_at"] = datetime.now(_RIYADH).isoformat()
         if self.data["status"] == "running":
             self.data["status"] = "success"
-        if self.data["data"]["retrieved_at"] is None:
-            self.data["data"]["retrieved_at"] = self.data["finished_at"]
         destination = Path(path or os.getenv("SAUDI_AGENT_AUDIT_PATH", "data/audit/run.json"))
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(
