@@ -20,6 +20,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from scripts.run_audit import RunAudit, record_telegram, set_active_audit
+
 # ===================== الإعدادات =====================
 BACKTEST_SYMBOLS = {  # قائمة ثابتة للاختبار التاريخي فقط؛ المسح الحي ديناميكي من سهمك
     # قائمة تجريبية ثابتة من 50 سهماً؛ لا تمثل ترتيباً يومياً للسيولة.
@@ -74,6 +76,7 @@ _SAHMK_LAST_REQUEST_AT = None
 MARKET_CONTEXT = None
 MARKET_AUDIT = []
 MARKET_UNIVERSE_CONTEXT = None
+_AUDIT_RECOMMENDATION_COUNT = 0
 
 
 class DataValidationError(RuntimeError):
@@ -662,6 +665,8 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
         raise SignalAllocationError(
             "رُصدت إشارات فنية لكن تعذر تخصيص سهم واحد ضمن سقفي المخاطرة والمراكز؛ لم تُرسل نتيجة فارغة."
         )
+    global _AUDIT_RECOMMENDATION_COUNT
+    _AUDIT_RECOMMENDATION_COUNT = len(allocated)
     return allocated
 
 
@@ -837,19 +842,25 @@ def send(text: str) -> None:
     if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
         print(text)
         print("\n[تنبيه] ما تم الإرسال: حدد TELEGRAM_TOKEN و TELEGRAM_CHAT_ID")
+        record_telegram("skipped", "Telegram credentials are not configured")
         return
-    r = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=30,
-    )
-    r.raise_for_status()
     try:
-        payload = r.json()
-    except ValueError as exc:
-        raise RuntimeError("Telegram أعاد استجابة غير صالحة بعد طلب الإرسال.") from exc
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
-        description = payload.get("description", "رفض Telegram الرسالة.") if isinstance(payload, dict) else "استجابة Telegram غير متوقعة."
-        raise RuntimeError(f"فشل تأكيد Telegram للإرسال: {description}")
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=30,
+        )
+        r.raise_for_status()
+        try:
+            payload = r.json()
+        except ValueError as exc:
+            raise RuntimeError("Telegram أعاد استجابة غير صالحة بعد طلب الإرسال.") from exc
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            description = payload.get("description", "رفض Telegram الرسالة.") if isinstance(payload, dict) else "استجابة Telegram غير متوقعة."
+            raise RuntimeError(f"فشل تأكيد Telegram للإرسال: {description}")
+    except Exception as exc:
+        record_telegram("failed", exc)
+        raise
+    record_telegram("sent")
     print("تم تأكيد الإرسال من Telegram.")
 
 
@@ -1166,8 +1177,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    audit = RunAudit()
+    set_active_audit(audit)
     try:
         main()
     except (DataValidationError, SignalAllocationError) as exc:
+        audit.fail(exc)
         print(f"[لم يتم إصدار أو إرسال نتيجة] {exc}", file=sys.stderr)
         sys.exit(2)
+    except Exception as exc:
+        audit.fail(exc)
+        raise
+    finally:
+        audit.capture(globals())
+        audit.write()
+        set_active_audit(None)
