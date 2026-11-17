@@ -77,6 +77,8 @@ MARKET_CONTEXT = None
 MARKET_AUDIT = []
 MARKET_UNIVERSE_CONTEXT = None
 SAHMK_LAST_RETRIEVED_AT = None
+SAHMK_LAST_QUOTE_TIMESTAMP = None
+SAHMK_LAST_QUOTE_DELAYED = None
 _AUDIT_RECOMMENDATION_COUNT = 0
 
 
@@ -224,6 +226,7 @@ def validate_post_close_timestamp(timestamp: pd.Timestamp, label: str, expected_
 
 def fetch_sahmk_quote(code: str, expected_date) -> dict:
     """السعر الأساسي للإشارة من سهمك مع دعم الاستجابة المتداخلة والتحقق من تاريخها."""
+    global SAHMK_LAST_QUOTE_TIMESTAMP, SAHMK_LAST_QUOTE_DELAYED
     payload = sahmk_get(f"quote/{code}/")
     data, envelope = _sahmk_response_data(payload)
     price = data.get("price")
@@ -240,6 +243,8 @@ def fetch_sahmk_quote(code: str, expected_date) -> dict:
     if not pd.notna(price) or price <= 0:
         raise DataValidationError(f"{code}: سعر سهمك غير صالح.")
     validate_post_close_timestamp(updated_at, f"{code} من سهمك", expected_date)
+    SAHMK_LAST_QUOTE_TIMESTAMP = updated_at.isoformat()
+    SAHMK_LAST_QUOTE_DELAYED = _sahmk_delayed(data, envelope)
     return {
         "price": price,
         "updated_at": updated_at,
@@ -262,6 +267,7 @@ def validate_review_quote_timestamp(timestamp: pd.Timestamp, now: datetime,
 
 def fetch_sahmk_review_quote(code: str, now: datetime) -> dict:
     """Fetch current delayed quote for the 10:15 next-session review."""
+    global SAHMK_LAST_QUOTE_TIMESTAMP, SAHMK_LAST_QUOTE_DELAYED
     payload = sahmk_get(f"quote/{code}/")
     data, envelope = _sahmk_response_data(payload)
     price = data.get("price")
@@ -276,6 +282,8 @@ def fetch_sahmk_review_quote(code: str, now: datetime) -> dict:
     if not pd.notna(price) or price <= 0:
         raise DataValidationError(f"{code}: سعر سهمك غير صالح.")
     validate_review_quote_timestamp(updated_at, now, f"{code} من سهمك")
+    SAHMK_LAST_QUOTE_TIMESTAMP = updated_at.isoformat()
+    SAHMK_LAST_QUOTE_DELAYED = _sahmk_delayed(data, envelope)
     return {"price": price, "updated_at": updated_at,
             "is_delayed": _sahmk_delayed(data, envelope)}
 
