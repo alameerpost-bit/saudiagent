@@ -21,7 +21,7 @@ import requests
 import yfinance as yf
 
 from scripts.run_audit import RunAudit, mark_skipped, record_telegram, set_active_audit
-from scripts.skills_orchestrator import evaluate_closing_pipeline
+from scripts.skills_orchestrator import evaluate_closing_pipeline, evaluate_morning_review
 
 # ===================== الإعدادات =====================
 BACKTEST_SYMBOLS = {  # قائمة ثابتة للاختبار التاريخي فقط؛ المسح الحي ديناميكي من سهمك
@@ -834,12 +834,14 @@ def review_next_session(now: datetime | None = None) -> str:
         lines.append("لا توجد توصيات سابقة مستوفية للشروط عند إغلاق الجلسة المرجعية؛ لا توجد أسهم لمراجعتها.")
         return "\n".join(lines)
 
+    reviewed_symbols = []
     for item in previous_signals:
         required = ("code", "name", "entry", "stop", "target")
         if any(key not in item for key in required):
             raise DataValidationError("ملف توصيات الإغلاق يحتوي توصية ناقصة؛ أوقفنا المراجعة.")
         code = str(item["code"])
         quote = fetch_sahmk_review_quote(code, local)
+        reviewed_symbols.append(code)
         entry = float(item["entry"])
         stop = float(item["stop"])
         target = float(item["target"])
@@ -861,6 +863,15 @@ def review_next_session(now: datetime | None = None) -> str:
             f"  التقييم: {status}",
             "",
         ])
+    review_skills = evaluate_morning_review(reviewed_symbols)
+    active_count = sum(
+        item["status"] == "active_existing_logic"
+        for item in review_skills["skills"]
+    )
+    lines.extend([
+        f"منسق المهارات: مراجعة سعرية للقرارات السابقة | {active_count}/11 مهارات تستخدم منطقاً قائماً.",
+        "المراجعة للقراءة فقط؛ لا أوامر وسيط ولا تنفيذ آلي.",
+    ])
     return "\n".join(lines)
 
 
