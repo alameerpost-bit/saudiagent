@@ -609,8 +609,11 @@ def allocate_positions(candidates: list[dict]) -> list[dict]:
 # ===================== الإشارات اليومية =====================
 def generate_signals(now: datetime | None = None) -> list[dict]:
     local = _local_now(now)
-    if not is_saudi_trading_day(local.date()) or local.time() < time_of_day(*SEND_TIME):
-        raise DataValidationError("الإشارات اليومية متاحة فقط بعد 16:00 بتوقيت الرياض في يوم تداول.")
+    allow_late_scheduled = os.getenv("SAUDI_AGENT_ALLOW_LATE_RUN", "").lower() == "true"
+    if not is_saudi_trading_day(local.date()):
+        raise DataValidationError("لا توجد جلسة تداول سعودية في تاريخ التنفيذ.")
+    if local.time() < time_of_day(*SEND_TIME) and not allow_late_scheduled:
+        raise DataValidationError("الإشارات اليومية متاحة فقط بعد 16:00 بتوقيت الرياض؛ التشغيل اليدوي المبكر مرفوض.")
 
     candidates = []
     expected = latest_expected_session(local)
@@ -1227,16 +1230,17 @@ def main() -> None:
         # التشغيل المبكر أو في يوم غير تداولي حالة طبيعية؛ لا تُعامل كفشل للـ workflow.
         now = _local_now()
         if not is_saudi_trading_day(now.date()):
-            print("[تخطي طبيعي] لا توجد جلسة تداول اليوم؛ لم تُصدر توصيات ولم تُرسل رسالة.")
+            audit = __import__("scripts.run_audit", fromlist=["_ACTIVE"])._ACTIVE
+            if audit is not None:
+                audit.skip("non_trading_day")
+            print("[تخطي طبيعي] لا توجد جلسة تداول سعودية اليوم؛ لا توجد توصيات.")
             return
-        if now.time() < time_of_day(*SEND_TIME):
-            ready = f"{SEND_TIME[0]:02d}:{SEND_TIME[1]:02d}"
-            print(
-                f"[تخطي طبيعي] لم يحِن موعد التوصيات بعد؛ "
-                f"تبدأ الإتاحة عند {ready} بتوقيت الرياض. "
-                "لم تُصدر توصيات ولم تُرسل رسالة."
+        allow_late_scheduled = os.getenv("SAUDI_AGENT_ALLOW_LATE_RUN", "").lower() == "true"
+        if now.time() < time_of_day(*SEND_TIME) and not allow_late_scheduled:
+            raise DataValidationError(
+                f"تشغيل مبكر قبل {SEND_TIME[0]:02d}:{SEND_TIME[1]:02d} بتوقيت الرياض؛ "
+                "لم نصدر توصيات. أعد التشغيل بعد موعد الإغلاق."
             )
-            return
         # الاستثناء قبل send يمنع إرسال «لا توجد فرص» عند فشل التحقق.
         signals = generate_signals(now)
         save_previous_signals(signals, latest_expected_session(now), now)
