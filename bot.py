@@ -610,7 +610,7 @@ def allocate_positions(candidates: list[dict]) -> list[dict]:
 def generate_signals(now: datetime | None = None) -> list[dict]:
     local = _local_now(now)
     allow_late_scheduled = os.getenv("SAUDI_AGENT_ALLOW_LATE_RUN", "").lower() == "true"
-    if not is_saudi_trading_day(local.date()):
+    if not is_saudi_trading_day(local.date()) and not allow_late_scheduled:
         raise DataValidationError("لا توجد جلسة تداول سعودية في تاريخ التنفيذ.")
     if local.time() < time_of_day(*SEND_TIME) and not allow_late_scheduled:
         raise DataValidationError("الإشارات اليومية متاحة فقط بعد 16:00 بتوقيت الرياض؛ التشغيل اليدوي المبكر مرفوض.")
@@ -1230,11 +1230,11 @@ def main() -> None:
     else:
         # التشغيل المبكر أو في يوم غير تداولي حالة طبيعية؛ لا تُعامل كفشل للـ workflow.
         now = _local_now()
-        if not is_saudi_trading_day(now.date()):
+        allow_late_scheduled = os.getenv("SAUDI_AGENT_ALLOW_LATE_RUN", "").lower() == "true"
+        if not is_saudi_trading_day(now.date()) and not allow_late_scheduled:
             mark_skipped("non_trading_day")
             print("[تخطي طبيعي] لا توجد جلسة تداول سعودية اليوم؛ لا توجد توصيات.")
             return
-        allow_late_scheduled = os.getenv("SAUDI_AGENT_ALLOW_LATE_RUN", "").lower() == "true"
         if now.time() < time_of_day(*SEND_TIME) and not allow_late_scheduled:
             raise DataValidationError(
                 f"تشغيل مبكر قبل {SEND_TIME[0]:02d}:{SEND_TIME[1]:02d} بتوقيت الرياض؛ "
