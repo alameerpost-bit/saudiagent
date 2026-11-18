@@ -21,6 +21,7 @@ import requests
 import yfinance as yf
 
 from scripts.run_audit import RunAudit, mark_skipped, record_telegram, set_active_audit
+from scripts.skills_orchestrator import evaluate_closing_pipeline
 
 # ===================== الإعدادات =====================
 BACKTEST_SYMBOLS = {  # قائمة ثابتة للاختبار التاريخي فقط؛ المسح الحي ديناميكي من سهمك
@@ -80,6 +81,7 @@ SAHMK_LAST_RETRIEVED_AT = None
 SAHMK_LAST_QUOTE_TIMESTAMP = None
 SAHMK_LAST_QUOTE_DELAYED = None
 _AUDIT_RECOMMENDATION_COUNT = 0
+SKILLS_PIPELINE_AUDIT = None
 
 
 class DataValidationError(RuntimeError):
@@ -702,7 +704,35 @@ def generate_signals(now: datetime | None = None) -> list[dict]:
         raise SignalAllocationError(
             "رُصدت إشارات فنية لكن تعذر تخصيص سهم واحد ضمن سقفي المخاطرة والمراكز؛ لم تُرسل نتيجة فارغة."
         )
-    global _AUDIT_RECOMMENDATION_COUNT
+
+    # Shadow-mode skills orchestration: audit existing strategy outputs only.
+    # It must not add, remove, rank, or modify recommendations.
+    global _AUDIT_RECOMMENDATION_COUNT, SKILLS_PIPELINE_AUDIT
+    SKILLS_PIPELINE_AUDIT = evaluate_closing_pipeline(
+        ranked_candidates,
+        allocated,
+        max_total_risk=MAX_TOTAL_RISK,
+        max_total_commitment=MAX_TOTAL_POSITION,
+    )
+    if SKILLS_PIPELINE_AUDIT["status"] != "PASS":
+        raise DataValidationError(
+            "فشل فحص منسق المهارات لحدود المخاطر: "
+            + "، ".join(SKILLS_PIPELINE_AUDIT["violations"])
+        )
+    active_skills = [
+        item["id"] for item in SKILLS_PIPELINE_AUDIT["skills"]
+        if item["status"] == "active_existing_logic"
+    ]
+    blocked_skills = [
+        item["id"] for item in SKILLS_PIPELINE_AUDIT["skills"]
+        if item["status"] in ("blocked", "reference_only")
+    ]
+    print(
+        f"[منسق المهارات] PASS | وضع تحقق ظلّي | "
+        f"مهارات تستخدم منطقاً قائماً: {len(active_skills)}/11 | "
+        f"غير مفعلة/مرجعية: {len(blocked_skills)}/11 | "
+        "لا تغيير على التوصيات أو الاستراتيجية."
+    )
     _AUDIT_RECOMMENDATION_COUNT = len(allocated)
     return allocated
 
