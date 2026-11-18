@@ -33,6 +33,11 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
+      - name: Verify functional review and Telegram delivery
+        env:
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_COMMIT_SHA: ${{ github.sha }}
+        run: python scripts/verify_run_audit.py
       - name: Upload run audit
         if: always()
         uses: actions/upload-artifact@v4
