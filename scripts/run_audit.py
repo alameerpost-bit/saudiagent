@@ -74,6 +74,10 @@ class RunAudit:
         value = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "[REDACTED_TELEGRAM_TOKEN]", value)
         return value[:1200]
 
+    def skip(self, reason):
+        self.data["status"] = "skipped"
+        self.data["skip_reason"] = str(reason)
+
     def fail(self, error):
         self.data["status"] = "failed"
         self.data["errors"].append({
@@ -141,6 +145,9 @@ class RunAudit:
             self.data["recommendations"]["emission_decision"] = (
                 "emitted" if self.data["telegram"]["status"] == "sent" else "generated_not_confirmed_sent"
             )
+        elif self.data["telegram"]["status"] == "sent":
+            self.data["recommendations"]["emission_decision"] = "sent_no_recommendations"
+            self.data["recommendations"]["no_emission_reason"] = "no_qualifying_signals"
         elif self.data["recommendations"]["emission_decision"] == "not_attempted":
             if self.data["operation"] == "review":
                 self.data["recommendations"]["emission_decision"] = "not_applicable_review_only"
