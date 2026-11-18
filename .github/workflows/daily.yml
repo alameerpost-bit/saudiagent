@@ -33,6 +33,12 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SAHMK_API_KEY: ${{ secrets.SAHMK_API_KEY }}
+          SAUDI_AGENT_ALLOW_LATE_RUN: ${{ github.event_name == 'schedule' || inputs.watchdog_fallback }}
+      - name: Verify functional run and Telegram delivery
+        env:
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_COMMIT_SHA: ${{ github.sha }}
+        run: python scripts/verify_run_audit.py
       - name: Save closing recommendations for morning review
         if: success()
         env:
