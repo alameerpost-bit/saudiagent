@@ -42,6 +42,24 @@ class RunAuditTests(unittest.TestCase):
         )
         self.assertTrue(audit.data["data"]["delayed"])
 
+    def test_captures_skills_orchestration_without_enabling_execution(self):
+        audit = RunAudit()
+        audit.capture({
+            "MARKET_AUDIT": [],
+            "SKILLS_PIPELINE_AUDIT": {
+                "mode": "shadow_validation",
+                "status": "PASS",
+                "skills": [
+                    {"id": "trader-screener", "status": "active_existing_logic"},
+                    {"id": "trader-news", "status": "blocked"},
+                ],
+            },
+        })
+        self.assertEqual(audit.data["skills"]["active_existing_logic"], 1)
+        self.assertEqual(audit.data["skills"]["blocked_or_reference_only"], 1)
+        self.assertFalse(audit.data["skills"]["automatic_execution"])
+        self.assertFalse(audit.data["skills"]["broker_orders_enabled"])
+
     def test_does_not_invent_retrieval_timestamp(self):
         audit = RunAudit()
         audit.capture({
