@@ -62,3 +62,14 @@ def evaluate_closing_pipeline(
         "violations": violations,
         "skills": registry(),
     }
+
+def evaluate_morning_review(reviewed_symbols: list[str]) -> dict[str, Any]:
+    """Record the existing read-only price-review capability without trading."""
+    return {
+        "version": 1,
+        "mode": "shadow_validation",
+        "reviewed_symbols": list(reviewed_symbols),
+        "automatic_execution": False,
+        "broker_orders_enabled": False,
+        "skills": registry(),
+    }
