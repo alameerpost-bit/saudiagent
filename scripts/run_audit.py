@@ -145,6 +145,28 @@ class RunAudit:
         self.data["data"]["rejected_symbols"] = rejected_symbols
         self.data["data"]["no_signal_symbols"] = no_signal_symbols
         self.data["data"]["rejection_reasons"] = dict(reasons)
+        closing_skills = namespace.get("SKILLS_PIPELINE_AUDIT")
+        review_skills = namespace.get("SKILLS_REVIEW_AUDIT")
+        skills_snapshot = closing_skills or review_skills
+        if skills_snapshot:
+            skill_items = skills_snapshot.get("skills", [])
+            self.data["skills"] = {
+                "mode": skills_snapshot.get("mode"),
+                "status": skills_snapshot.get("status", "OBSERVED"),
+                "active_existing_logic": sum(
+                    item.get("status") == "active_existing_logic" for item in skill_items
+                ),
+                "blocked_or_reference_only": sum(
+                    item.get("status") in ("blocked", "reference_only") for item in skill_items
+                ),
+                "capabilities": [
+                    {"id": item.get("id"), "status": item.get("status")}
+                    for item in skill_items
+                ],
+                "reviewed_symbols": skills_snapshot.get("reviewed_symbols", []),
+                "automatic_execution": False,
+                "broker_orders_enabled": False,
+            }
         self.data["recommendations"]["count"] = namespace.get("_AUDIT_RECOMMENDATION_COUNT", 0)
         if self.data["recommendations"]["count"]:
             self.data["recommendations"]["emission_decision"] = (
