@@ -82,6 +82,7 @@ SAHMK_LAST_QUOTE_TIMESTAMP = None
 SAHMK_LAST_QUOTE_DELAYED = None
 _AUDIT_RECOMMENDATION_COUNT = 0
 SKILLS_PIPELINE_AUDIT = None
+SKILLS_REVIEW_AUDIT = None
 
 
 class DataValidationError(RuntimeError):
@@ -863,7 +864,9 @@ def review_next_session(now: datetime | None = None) -> str:
             f"  التقييم: {status}",
             "",
         ])
-    review_skills = evaluate_morning_review(reviewed_symbols)
+    global SKILLS_REVIEW_AUDIT
+    SKILLS_REVIEW_AUDIT = evaluate_morning_review(reviewed_symbols)
+    review_skills = SKILLS_REVIEW_AUDIT
     active_count = sum(
         item["status"] == "active_existing_logic"
         for item in review_skills["skills"]
@@ -902,6 +905,16 @@ def format_message(signals: list[dict]) -> str:
     audit = MARKET_AUDIT or []
     verified = sum(item["status"] == "OK" for item in audit)
     coverage_line = f"تغطية المسح: {verified}/{len(audit)} (تاسي + {max(0, len(audit) - 1)} سهماً) | حد التغطية الأدنى: {MIN_SCAN_COVERAGE:.0%}"
+    skills_audit = SKILLS_PIPELINE_AUDIT or {}
+    active_skill_count = sum(
+        item.get("status") == "active_existing_logic"
+        for item in skills_audit.get("skills", [])
+    )
+    skills_line = (
+        f"منسق المهارات: {active_skill_count}/11 تستخدم منطقاً قائماً؛ "
+        "البقية غير مفعلة أو مرجعية."
+        if skills_audit else "منسق المهارات: لم ينفذ في هذا التشغيل."
+    )
     diagnostics = [f"• {item['label']}: {'؛ '.join(item.get('reasons', []))}" for item in audit if item.get('signal_status') == 'NO_SIGNAL']
     diagnostics.extend(
         f"• {item['label']}: تعذر التحقق — {item.get('error', 'سبب غير محدد')}"
@@ -918,12 +931,12 @@ def format_message(signals: list[dict]) -> str:
     )
     diagnostics_text = ("\nأسباب عدم الدخول:\n" + "\n".join(diagnostics)) if diagnostics else ""
     if not signals:
-        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{universe_line}\n{coverage_line}\n"
+        return (f"📊 تحليل فرص اليوم التالي - {today}\n{market_line}\n{universe_line}\n{coverage_line}\n{skills_line}\n"
                 "لا توجد فرص دخول مستوفية للشروط الفنية." + diagnostics_text +
                 "\nالبيانات المتأخرة مقبولة هنا فقط إذا أكدت جلسة اليوم بعد اكتمال الإغلاق.")
     total_risk = sum(s["risk"] for s in signals)
     total_commitment = sum(s["commitment"] for s in signals)
-    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, universe_line, coverage_line,
+    lines = [f"📊 توصيات جلسة التداول التالية - {today}", market_line, universe_line, coverage_line, skills_line,
              f"(تحليل إغلاق جلسة {signals[0]['date']}؛ المؤشرات من Yahoo وسعر المرجع من سهمك)", ""]
     for s in signals:
         lines += [
