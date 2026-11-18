@@ -4,7 +4,7 @@
 - Canonical project: **Saudi Agent**
 - Repository: `alameerpost-bit/saudiagent`
 - Default branch: `main`
-- Development branch: `feature/saudi-agent-v2-foundation`
+- Active integration branch: `main` (user-approved direct integration)
 - Market: Saudi Exchange (Tadawul), with TASI as the benchmark
 - Intended broker/data integration: Sahm Capital, subject to documented API capabilities and permissions
 
@@ -33,6 +33,26 @@ The daily workflow writes `data/previous_signals.json` back to the repository fo
 4. Delayed quotes may support post-close analysis and explicitly delayed review, but must not be represented as real-time execution prices.
 5. Telegram is the notification channel.
 6. No broker order execution is implemented or enabled by this foundation.
+
+## Skills orchestration status (2026-11-18)
+
+The eleven-skill registry is connected to the production Python path through
+`scripts/skills_orchestrator.py` in shadow-validation mode.
+
+- Existing logic exercised: technical screening, morning price monitoring,
+  capital allocation, and aggregate risk validation (4/11 capabilities).
+- Blocked pending Saudi data/account adapters: financial analysis, news and
+  disclosures, cost-basis ledger, portfolio rebalancing, and broker gateway.
+- Reference-only: US 13F institutional holdings and US congressional disclosures.
+- The closing orchestrator audits the existing candidates and allocations; it
+  does not create, remove, reorder, or modify signals.
+- The morning review remains read-only and reviews only the previous close's
+  saved symbols.
+- All broker orders and automatic execution remain disabled.
+
+The integration is intentionally incremental. A capability must not be marked
+active merely because its skill file is present; it requires a tested Saudi
+adapter and an explicit integration into the production path.
 
 ## Target modular architecture
 
