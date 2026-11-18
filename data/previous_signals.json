@@ -1,6 +1,26 @@
 {
-  "session_date": "2026-11-16",
-  "generated_at": "2026-11-16T18:46:22.537952+03:00",
+  "schema_version": 2,
+  "session_date": "2026-11-18",
+  "generated_at": "2026-11-18T18:09:05.772501+03:00",
   "source": "daily_close_recommendations",
-  "signals": []
+  "generation_status": "success",
+  "run_id": "44332189553",
+  "run_attempt": 1,
+  "commit_sha": "fbe8ce521a75c4ea89a52a97c844fe245ee424fe",
+  "recommendation_count": 1,
+  "signals": [
+    {
+      "code": "2083",
+      "name": "شركة مرافق الكهرباء والمياه بالجبيل وينبع",
+      "entry": 46.18,
+      "stop": 43.07142881120954,
+      "target": 50.84285678318569,
+      "rsi": 53.35321031548858,
+      "date": "2026-11-18",
+      "shares": 3,
+      "value": 138.54,
+      "risk": 9.91478418738162,
+      "commitment": 138.844954248
+    }
+  ]
 }
