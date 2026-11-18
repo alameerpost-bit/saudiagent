@@ -25,6 +25,11 @@ def record_telegram(status, error=None):
         }
 
 
+def mark_skipped(reason):
+    if _ACTIVE is not None:
+        _ACTIVE.skip(reason)
+
+
 class RunAudit:
     def __init__(self, workflow=None):
         now = datetime.now(_RIYADH)
