@@ -150,6 +150,8 @@ class RunAudit:
             self.data["recommendations"]["emission_decision"] = (
                 "emitted" if self.data["telegram"]["status"] == "sent" else "generated_not_confirmed_sent"
             )
+        elif self.data["operation"] == "review" and self.data["telegram"]["status"] == "sent":
+            self.data["recommendations"]["emission_decision"] = "not_applicable_review_only"
         elif self.data["telegram"]["status"] == "sent":
             self.data["recommendations"]["emission_decision"] = "sent_no_recommendations"
             self.data["recommendations"]["no_emission_reason"] = "no_qualifying_signals"
