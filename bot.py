@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from scripts.run_audit import RunAudit, record_telegram, set_active_audit
+from scripts.run_audit import RunAudit, mark_skipped, record_telegram, set_active_audit
 
 # ===================== الإعدادات =====================
 BACKTEST_SYMBOLS = {  # قائمة ثابتة للاختبار التاريخي فقط؛ المسح الحي ديناميكي من سهمك
@@ -1202,6 +1202,7 @@ def main() -> None:
     elif cmd == "review":
         review_now = _local_now()
         if not is_saudi_trading_day(review_now.date()):
+            mark_skipped("non_trading_day")
             print("[تخطي طبيعي] لا توجد جلسة تداول سعودية اليوم؛ لا توجد مراجعة ولا تنبيه.")
             return
         try:
@@ -1230,9 +1231,7 @@ def main() -> None:
         # التشغيل المبكر أو في يوم غير تداولي حالة طبيعية؛ لا تُعامل كفشل للـ workflow.
         now = _local_now()
         if not is_saudi_trading_day(now.date()):
-            audit = __import__("scripts.run_audit", fromlist=["_ACTIVE"])._ACTIVE
-            if audit is not None:
-                audit.skip("non_trading_day")
+            mark_skipped("non_trading_day")
             print("[تخطي طبيعي] لا توجد جلسة تداول سعودية اليوم؛ لا توجد توصيات.")
             return
         allow_late_scheduled = os.getenv("SAUDI_AGENT_ALLOW_LATE_RUN", "").lower() == "true"
