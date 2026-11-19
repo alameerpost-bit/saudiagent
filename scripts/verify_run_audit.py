@@ -29,6 +29,12 @@ def validate_audit(payload, expected_run_id=None, expected_commit_sha=None):
         raise ValueError(f"التشغيل لم يكتمل وظيفياً: {detail}")
 
     telegram = payload.get("telegram") or {}
+    if payload.get("execution_mode") == "shadow":
+        if telegram.get("status") != "shadow_suppressed":
+            raise ValueError("وضع Shadow لم يثبت منع Telegram فعلياً.")
+        if payload.get("run_id") in (None, "") or payload.get("commit_sha") in (None, ""):
+            raise ValueError("ملف Shadow يفتقد هوية التشغيل أو SHA المصدر.")
+        return "shadow_validated"
     if telegram.get("status") != "sent":
         detail = telegram.get("error") or telegram.get("status") or "غير معروف"
         raise ValueError(f"لم يؤكد Telegram الإرسال: {detail}")
