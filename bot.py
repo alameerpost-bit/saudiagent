@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from scripts.run_audit import RunAudit, mark_skipped, record_telegram, set_active_audit
+from scripts.run_audit import RunAudit, mark_skipped, record_telegram, run_identity, set_active_audit
 from scripts.skills_orchestrator import evaluate_closing_pipeline, evaluate_morning_review
 
 # ===================== الإعدادات =====================
@@ -745,15 +745,16 @@ def save_previous_signals(signals: list[dict], session_date=None, now=None) -> N
     directory = os.path.dirname(SIGNALS_STATE_PATH)
     if directory:
         os.makedirs(directory, exist_ok=True)
+    run_id, commit_sha = run_identity()
     payload = {
         "schema_version": 2,
         "session_date": session.isoformat(),
         "generated_at": local.isoformat(),
         "source": "daily_close_recommendations",
         "generation_status": "success",
-        "run_id": os.getenv("GITHUB_RUN_ID"),
+        "run_id": run_id,
         "run_attempt": int(os.getenv("GITHUB_RUN_ATTEMPT", "1")),
-        "commit_sha": os.getenv("GITHUB_SHA"),
+        "commit_sha": commit_sha,
         "recommendation_count": len(signals),
         "signals": [
             {
@@ -767,8 +768,14 @@ def save_previous_signals(signals: list[dict], session_date=None, now=None) -> N
             for item in signals
         ],
     }
-    with open(SIGNALS_STATE_PATH, "w", encoding="utf-8") as state_file:
+    destination = os.path.abspath(SIGNALS_STATE_PATH)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    temporary = f"{destination}.{run_id}.tmp"
+    with open(temporary, "w", encoding="utf-8") as state_file:
         json.dump(payload, state_file, ensure_ascii=False, indent=2)
+        state_file.flush()
+        os.fsync(state_file.fileno())
+    os.replace(temporary, destination)
 
 
 def load_previous_signals(expected_date) -> list[dict]:
@@ -959,6 +966,11 @@ def format_message(signals: list[dict]) -> str:
 
 
 def send(text: str) -> None:
+    if os.getenv("SAUDI_AGENT_SHADOW", "").lower() == "true":
+        print("[Shadow] تم منع إرسال Telegram فعلياً؛ الرسالة للمعاينة فقط.")
+        print(text)
+        record_telegram("shadow_suppressed")
+        return
     if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
         print(text)
         print("\n[تنبيه] ما تم الإرسال: حدد TELEGRAM_TOKEN و TELEGRAM_CHAT_ID")
