@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-def validate_audit(payload, expected_run_id=None, expected_commit_sha=None):
+def validate_audit(payload, expected_run_id=None, expected_commit_sha=None, expected_handoff_date=None):
     if not isinstance(payload, dict):
         raise ValueError("ملف التدقيق ليس كائناً JSON صالحاً.")
     if payload.get("schema_version") != 1:
@@ -48,9 +48,19 @@ def validate_audit(payload, expected_run_id=None, expected_commit_sha=None):
         elif operation == "review":
             if handoff.get("action") != "loaded":
                 raise ValueError("المراجعة الصباحية لم تقرأ ملف تسليم الإغلاق.")
-            if handoff.get("session_date") in (None, ""):
-                raise ValueError("ملف التسليم المقروء لا يحتوي تاريخ جلسة.")
-            if handoff.get("recommendation_count", 0) and data.get("freshness_decision") != "validated_for_review_window":
+            if not expected_handoff_date:
+                raise ValueError("لم يُحدد تاريخ جلسة الإغلاق المتوقع للتحقق المستقل.")
+            if handoff.get("session_date") != expected_handoff_date:
+                raise ValueError(
+                    "تاريخ ملف التسليم لا يطابق جلسة الإغلاق المتوقعة "
+                    f"({expected_handoff_date})."
+                )
+            if not handoff.get("run_id") or not handoff.get("commit_sha"):
+                raise ValueError("ملف التسليم يفتقد هوية تشغيل الإغلاق أو SHA المصدر.")
+            count = handoff.get("recommendation_count")
+            if not isinstance(count, int) or count < 0:
+                raise ValueError("عدد توصيات ملف التسليم غير صالح.")
+            if count > 0 and data.get("freshness_decision") != "validated_for_review_window":
                 raise ValueError("أسعار المراجعة لم تجتز نافذة حداثة البيانات.")
         else:
             raise ValueError("عملية Shadow غير معروفة.")
@@ -75,6 +85,7 @@ def main():
             payload,
             expected_run_id=os.getenv("EXPECTED_RUN_ID"),
             expected_commit_sha=os.getenv("EXPECTED_COMMIT_SHA"),
+            expected_handoff_date=os.getenv("EXPECTED_HANDOFF_DATE"),
         )
     except (OSError, ValueError, TypeError) as exc:
         print(f"[فشل التحقق الوظيفي] {exc}", file=sys.stderr)
