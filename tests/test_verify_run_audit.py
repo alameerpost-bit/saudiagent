@@ -77,7 +77,10 @@ class VerifyRunAuditTests(unittest.TestCase):
             "run_id": "closing-run", "commit_sha": "abc", "recommendation_count": 1,
         }
         payload["data"] = {"freshness_decision": "validated_for_review_window"}
-        self.assertEqual(validate_audit(payload), "shadow_validated")
+        self.assertEqual(
+            validate_audit(payload, expected_handoff_date="2026-11-19"),
+            "shadow_validated",
+        )
 
     def test_rejects_shadow_review_with_wrong_handoff_date(self):
         payload = audit(telegram="shadow_suppressed")
