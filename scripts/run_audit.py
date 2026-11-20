@@ -44,6 +44,17 @@ def record_telegram(status, error=None):
         }
 
 
+def record_handoff(action, payload):
+    if _ACTIVE is not None:
+        _ACTIVE.data["handoff"] = {
+            "action": action,
+            "session_date": payload.get("session_date"),
+            "run_id": payload.get("run_id"),
+            "commit_sha": payload.get("commit_sha"),
+            "recommendation_count": payload.get("recommendation_count"),
+        }
+
+
 def mark_skipped(reason):
     if _ACTIVE is not None:
         _ACTIVE.skip(reason)
@@ -82,6 +93,7 @@ class RunAudit:
                 "scan_coverage_decision": "unavailable",
                 "rejection_reasons": {},
             },
+            "handoff": {"action": "not_attempted"},
             "recommendations": {
                 "count": 0,
                 "emission_decision": "not_attempted",
