@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from scripts.run_audit import RunAudit, mark_skipped, record_telegram, run_identity, set_active_audit
+from scripts.run_audit import RunAudit, mark_skipped, record_handoff, record_telegram, run_identity, set_active_audit
 from scripts.skills_orchestrator import evaluate_closing_pipeline, evaluate_morning_review
 
 # ===================== الإعدادات =====================
@@ -81,6 +81,7 @@ SAHMK_LAST_RETRIEVED_AT = None
 SAHMK_LAST_QUOTE_TIMESTAMP = None
 SAHMK_LAST_QUOTE_DELAYED = None
 _AUDIT_RECOMMENDATION_COUNT = 0
+_AUDIT_HANDOFF = None
 SKILLS_PIPELINE_AUDIT = None
 SKILLS_REVIEW_AUDIT = None
 
@@ -776,6 +777,9 @@ def save_previous_signals(signals: list[dict], session_date=None, now=None) -> N
         state_file.flush()
         os.fsync(state_file.fileno())
     os.replace(temporary, destination)
+    global _AUDIT_HANDOFF
+    _AUDIT_HANDOFF = payload
+    record_handoff("written", payload)
 
 
 def load_previous_signals(expected_date) -> list[dict]:
@@ -810,6 +814,9 @@ def load_previous_signals(expected_date) -> list[dict]:
         key in item for key in ("code", "name", "entry", "stop", "target")
     ) for item in signals):
         raise DataValidationError("ملف التسليم يحتوي توصية ناقصة أو غير صالحة.")
+    global _AUDIT_HANDOFF
+    _AUDIT_HANDOFF = payload
+    record_handoff("loaded", payload)
     return signals
 
 
