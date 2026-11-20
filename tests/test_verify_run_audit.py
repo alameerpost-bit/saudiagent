@@ -31,6 +31,7 @@ class VerifyRunAuditTests(unittest.TestCase):
     def test_accepts_shadow_closing_only_with_verified_coverage_and_handoff(self):
         payload = audit(telegram="shadow_suppressed")
         payload["execution_mode"] = "shadow"
+        payload["recommendations"]["count"] = 1
         payload["handoff"] = {
             "action": "written", "session_date": "2026-11-20",
             "run_id": "123", "commit_sha": "abc", "recommendation_count": 1,
@@ -43,6 +44,36 @@ class VerifyRunAuditTests(unittest.TestCase):
             validate_audit(payload, expected_handoff_date="2026-11-19"),
             "shadow_validated",
         )
+
+    def test_rejects_shadow_closing_when_audit_count_differs_from_handoff(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["recommendations"]["count"] = 2
+        payload["handoff"] = {
+            "action": "written", "session_date": "2026-11-20",
+            "run_id": "123", "commit_sha": "abc", "recommendation_count": 1,
+        }
+        payload["data"] = {
+            "scan_coverage_decision": "accepted",
+            "freshness_decision": "validated_for_session",
+        }
+        with self.assertRaisesRegex(ValueError, "لا يطابق سجل التدقيق"):
+            validate_audit(payload, expected_handoff_date="2026-11-19")
+
+    def test_rejects_boolean_shadow_handoff_count(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["recommendations"]["count"] = 1
+        payload["handoff"] = {
+            "action": "written", "session_date": "2026-11-20",
+            "run_id": "123", "commit_sha": "abc", "recommendation_count": True,
+        }
+        payload["data"] = {
+            "scan_coverage_decision": "accepted",
+            "freshness_decision": "validated_for_session",
+        }
+        with self.assertRaisesRegex(ValueError, "عدد توصيات ملف التسليم"):
+            validate_audit(payload, expected_handoff_date="2026-11-19")
 
     def test_rejects_shadow_closing_without_handoff(self):
         payload = audit(telegram="shadow_suppressed")
