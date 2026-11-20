@@ -19,6 +19,13 @@ def main():
 
     env = os.environ.copy()
     env["SAUDI_AGENT_SHADOW"] = "true"
+    if operation == "review":
+        # Calculate the expected close session from the same official trading calendar,
+        # then pass it independently to the audit verifier.
+        from bot import _local_now, previous_trading_session
+        env["EXPECTED_HANDOFF_DATE"] = previous_trading_session(
+            _local_now().date()
+        ).isoformat()
     env.setdefault("SAUDI_AGENT_RUN_ID", f"external-{uuid.uuid4().hex}")
     env.setdefault("SIGNALS_STATE_PATH", str(ROOT / "data" / "previous_signals.json"))
     audit_dir = Path(env.get("SAUDI_AGENT_AUDIT_DIR", ROOT / "data" / "audit"))
