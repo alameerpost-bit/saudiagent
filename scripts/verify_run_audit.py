@@ -34,6 +34,26 @@ def validate_audit(payload, expected_run_id=None, expected_commit_sha=None):
             raise ValueError("وضع Shadow لم يثبت منع Telegram فعلياً.")
         if payload.get("run_id") in (None, "") or payload.get("commit_sha") in (None, ""):
             raise ValueError("ملف Shadow يفتقد هوية التشغيل أو SHA المصدر.")
+        handoff = payload.get("handoff") or {}
+        data = payload.get("data") or {}
+        if operation == "run":
+            if handoff.get("action") != "written":
+                raise ValueError("تشغيل الإغلاق لم يسجل كتابة ملف التسليم.")
+            if handoff.get("run_id") != payload.get("run_id") or handoff.get("commit_sha") != payload.get("commit_sha"):
+                raise ValueError("هوية ملف التسليم لا تطابق هوية تشغيل Shadow.")
+            if data.get("scan_coverage_decision") != "accepted":
+                raise ValueError("تغطية مسح السوق لم تجتز الحد الأدنى في Shadow.")
+            if data.get("freshness_decision") != "validated_for_session":
+                raise ValueError("توقيت بيانات الإغلاق لم يجتز التحقق في Shadow.")
+        elif operation == "review":
+            if handoff.get("action") != "loaded":
+                raise ValueError("المراجعة الصباحية لم تقرأ ملف تسليم الإغلاق.")
+            if handoff.get("session_date") in (None, ""):
+                raise ValueError("ملف التسليم المقروء لا يحتوي تاريخ جلسة.")
+            if handoff.get("recommendation_count", 0) and data.get("freshness_decision") != "validated_for_review_window":
+                raise ValueError("أسعار المراجعة لم تجتز نافذة حداثة البيانات.")
+        else:
+            raise ValueError("عملية Shadow غير معروفة.")
         return "shadow_validated"
     if telegram.get("status") != "sent":
         detail = telegram.get("error") or telegram.get("status") or "غير معروف"
