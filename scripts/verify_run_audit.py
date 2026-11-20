@@ -45,6 +45,14 @@ def validate_audit(payload, expected_run_id=None, expected_commit_sha=None, expe
                 raise ValueError("تغطية مسح السوق لم تجتز الحد الأدنى في Shadow.")
             if data.get("freshness_decision") != "validated_for_session":
                 raise ValueError("توقيت بيانات الإغلاق لم يجتز التحقق في Shadow.")
+            handoff_count = handoff.get("recommendation_count")
+            recommendation_count = (payload.get("recommendations") or {}).get("count")
+            if type(handoff_count) is not int or handoff_count < 0:
+                raise ValueError("عدد توصيات ملف التسليم غير صالح.")
+            if type(recommendation_count) is not int or recommendation_count < 0:
+                raise ValueError("عدد التوصيات في سجل التدقيق غير صالح.")
+            if handoff_count != recommendation_count:
+                raise ValueError("عدد التوصيات في ملف التسليم لا يطابق سجل التدقيق.")
         elif operation == "review":
             if handoff.get("action") != "loaded":
                 raise ValueError("المراجعة الصباحية لم تقرأ ملف تسليم الإغلاق.")
@@ -58,7 +66,7 @@ def validate_audit(payload, expected_run_id=None, expected_commit_sha=None, expe
             if not handoff.get("run_id") or not handoff.get("commit_sha"):
                 raise ValueError("ملف التسليم يفتقد هوية تشغيل الإغلاق أو SHA المصدر.")
             count = handoff.get("recommendation_count")
-            if not isinstance(count, int) or count < 0:
+            if type(count) is not int or count < 0:
                 raise ValueError("عدد توصيات ملف التسليم غير صالح.")
             if count > 0 and data.get("freshness_decision") != "validated_for_review_window":
                 raise ValueError("أسعار المراجعة لم تجتز نافذة حداثة البيانات.")
