@@ -6,6 +6,7 @@ on:
       - main
       - feature/sahmk-primary-market-data
       - feature/saudi-agent-v2-foundation
+      - pythonanywhere-shadow
   pull_request:
     branches:
       - main

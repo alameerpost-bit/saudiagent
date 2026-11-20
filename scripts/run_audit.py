@@ -3,6 +3,8 @@ import json
 import os
 import re
 import sys
+import subprocess
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +12,23 @@ from zoneinfo import ZoneInfo
 
 _ACTIVE = None
 _RIYADH = ZoneInfo("Asia/Riyadh")
+
+
+def run_identity():
+    """Return a stable external-run identity and the checked-out source revision."""
+    run_id = os.getenv("SAUDI_AGENT_RUN_ID") or os.getenv("GITHUB_RUN_ID")
+    if not run_id:
+        run_id = f"external-{uuid.uuid4().hex}"
+    commit_sha = os.getenv("SAUDI_AGENT_COMMIT_SHA") or os.getenv("GITHUB_SHA")
+    if not commit_sha:
+        try:
+            commit_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
+                text=True, timeout=5,
+            ).strip() or None
+        except (OSError, subprocess.SubprocessError):
+            commit_sha = None
+    return run_id, commit_sha
 
 
 def set_active_audit(audit):
@@ -25,6 +44,17 @@ def record_telegram(status, error=None):
         }
 
 
+def record_handoff(action, payload):
+    if _ACTIVE is not None:
+        _ACTIVE.data["handoff"] = {
+            "action": action,
+            "session_date": payload.get("session_date"),
+            "run_id": payload.get("run_id"),
+            "commit_sha": payload.get("commit_sha"),
+            "recommendation_count": payload.get("recommendation_count"),
+        }
+
+
 def mark_skipped(reason):
     if _ACTIVE is not None:
         _ACTIVE.skip(reason)
@@ -33,13 +63,15 @@ def mark_skipped(reason):
 class RunAudit:
     def __init__(self, workflow=None):
         now = datetime.now(_RIYADH)
+        run_id, commit_sha = run_identity()
         self.data = {
             "schema_version": 1,
-            "run_id": os.getenv("GITHUB_RUN_ID") or None,
+            "execution_mode": "shadow" if os.getenv("SAUDI_AGENT_SHADOW", "").lower() == "true" else "production",
+            "run_id": run_id,
             "run_attempt": int(os.getenv("GITHUB_RUN_ATTEMPT", "1")),
             "workflow": workflow or os.getenv("GITHUB_WORKFLOW") or "local",
             "operation": sys.argv[1] if len(sys.argv) > 1 else "run",
-            "commit_sha": os.getenv("GITHUB_SHA") or None,
+            "commit_sha": commit_sha,
             "started_at": now.isoformat(),
             "finished_at": None,
             "timezone": "Asia/Riyadh",
@@ -61,6 +93,7 @@ class RunAudit:
                 "scan_coverage_decision": "unavailable",
                 "rejection_reasons": {},
             },
+            "handoff": {"action": "not_attempted"},
             "recommendations": {
                 "count": 0,
                 "emission_decision": "not_attempted",
@@ -192,9 +225,15 @@ class RunAudit:
             self.data["status"] = "success"
         destination = Path(path or os.getenv("SAUDI_AGENT_AUDIT_PATH", "data/audit/run.json"))
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        temporary = destination.with_name(
+            f".{destination.name}.{self.data['run_id']}.tmp"
         )
+        with temporary.open("w", encoding="utf-8") as state_file:
+            state_file.write(
+                json.dumps(self.data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            )
+            state_file.flush()
+            os.fsync(state_file.fileno())
+        os.replace(temporary, destination)
         print(f"[Run audit] {destination}")
         return destination

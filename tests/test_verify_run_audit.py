@@ -28,6 +28,127 @@ class VerifyRunAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "لا يخص تشغيل"):
             validate_audit(audit(), "456", "abc")
 
+    def test_accepts_shadow_closing_only_with_verified_coverage_and_handoff(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["recommendations"]["count"] = 1
+        payload["handoff"] = {
+            "action": "written", "session_date": "2026-11-20",
+            "run_id": "123", "commit_sha": "abc", "recommendation_count": 1,
+        }
+        payload["data"] = {
+            "scan_coverage_decision": "accepted",
+            "freshness_decision": "validated_for_session",
+        }
+        self.assertEqual(
+            validate_audit(payload, expected_handoff_date="2026-11-19"),
+            "shadow_validated",
+        )
+
+    def test_rejects_shadow_closing_when_audit_count_differs_from_handoff(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["recommendations"]["count"] = 2
+        payload["handoff"] = {
+            "action": "written", "session_date": "2026-11-20",
+            "run_id": "123", "commit_sha": "abc", "recommendation_count": 1,
+        }
+        payload["data"] = {
+            "scan_coverage_decision": "accepted",
+            "freshness_decision": "validated_for_session",
+        }
+        with self.assertRaisesRegex(ValueError, "لا يطابق سجل التدقيق"):
+            validate_audit(payload, expected_handoff_date="2026-11-19")
+
+    def test_rejects_boolean_shadow_handoff_count(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["recommendations"]["count"] = 1
+        payload["handoff"] = {
+            "action": "written", "session_date": "2026-11-20",
+            "run_id": "123", "commit_sha": "abc", "recommendation_count": True,
+        }
+        payload["data"] = {
+            "scan_coverage_decision": "accepted",
+            "freshness_decision": "validated_for_session",
+        }
+        with self.assertRaisesRegex(ValueError, "عدد توصيات ملف التسليم"):
+            validate_audit(payload, expected_handoff_date="2026-11-19")
+
+    def test_rejects_shadow_closing_without_handoff(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["data"] = {
+            "scan_coverage_decision": "accepted",
+            "freshness_decision": "validated_for_session",
+        }
+        with self.assertRaisesRegex(ValueError, "لم يسجل كتابة"):
+            validate_audit(payload)
+
+    def test_rejects_shadow_closing_with_insufficient_coverage(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["execution_mode"] = "shadow"
+        payload["handoff"] = {
+            "action": "written", "session_date": "2026-11-20",
+            "run_id": "123", "commit_sha": "abc", "recommendation_count": 0,
+        }
+        payload["data"] = {
+            "scan_coverage_decision": "below_minimum",
+            "freshness_decision": "validated_for_session",
+        }
+        with self.assertRaisesRegex(ValueError, "تغطية مسح السوق"):
+            validate_audit(payload)
+
+    def test_accepts_shadow_review_with_consumed_handoff(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["operation"] = "review"
+        payload["execution_mode"] = "shadow"
+        payload["handoff"] = {
+            "action": "loaded", "session_date": "2026-11-19",
+            "run_id": "closing-run", "commit_sha": "abc", "recommendation_count": 1,
+        }
+        payload["data"] = {"freshness_decision": "validated_for_review_window"}
+        self.assertEqual(
+            validate_audit(payload, expected_handoff_date="2026-11-19"),
+            "shadow_validated",
+        )
+
+    def test_rejects_shadow_review_with_wrong_handoff_date(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["operation"] = "review"
+        payload["execution_mode"] = "shadow"
+        payload["handoff"] = {
+            "action": "loaded", "session_date": "2026-11-18",
+            "run_id": "closing-run", "commit_sha": "abc", "recommendation_count": 1,
+        }
+        payload["data"] = {"freshness_decision": "validated_for_review_window"}
+        with self.assertRaisesRegex(ValueError, "لا يطابق جلسة الإغلاق المتوقعة"):
+            validate_audit(payload, expected_handoff_date="2026-11-19")
+
+    def test_rejects_shadow_review_without_expected_date(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["operation"] = "review"
+        payload["execution_mode"] = "shadow"
+        payload["handoff"] = {
+            "action": "loaded", "session_date": "2026-11-19",
+            "run_id": "closing-run", "commit_sha": "abc", "recommendation_count": 0,
+        }
+        payload["data"] = {}
+        with self.assertRaisesRegex(ValueError, "لم يُحدد تاريخ"):
+            validate_audit(payload)
+
+    def test_rejects_shadow_review_without_handoff_identity(self):
+        payload = audit(telegram="shadow_suppressed")
+        payload["operation"] = "review"
+        payload["execution_mode"] = "shadow"
+        payload["handoff"] = {
+            "action": "loaded", "session_date": "2026-11-19",
+            "recommendation_count": 0,
+        }
+        payload["data"] = {}
+        with self.assertRaisesRegex(ValueError, "يفتقد هوية"):
+            validate_audit(payload, expected_handoff_date="2026-11-19")
+
     def test_accepts_explicit_non_trading_day_skip(self):
         payload = audit(status="skipped", telegram="not_attempted")
         payload["skip_reason"] = "non_trading_day"

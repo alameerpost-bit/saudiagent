@@ -94,6 +94,19 @@ class RunAuditTests(unittest.TestCase):
         finally:
             set_active_audit(None)
 
+    def test_shadow_mode_is_explicit_in_audit(self):
+        previous = os.environ.get("SAUDI_AGENT_SHADOW")
+        os.environ["SAUDI_AGENT_SHADOW"] = "true"
+        try:
+            audit = RunAudit()
+            self.assertEqual(audit.data["execution_mode"], "shadow")
+            self.assertTrue(audit.data["run_id"])
+        finally:
+            if previous is None:
+                os.environ.pop("SAUDI_AGENT_SHADOW", None)
+            else:
+                os.environ["SAUDI_AGENT_SHADOW"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()
