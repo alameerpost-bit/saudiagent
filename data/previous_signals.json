@@ -1,26 +1,39 @@
 {
   "schema_version": 2,
-  "session_date": "2026-11-18",
-  "generated_at": "2026-11-18T18:09:05.772501+03:00",
+  "session_date": "2026-11-22",
+  "generated_at": "2026-11-22T23:18:58.335609+03:00",
   "source": "daily_close_recommendations",
   "generation_status": "success",
-  "run_id": "44332189553",
+  "run_id": "45065694543",
   "run_attempt": 1,
-  "commit_sha": "fbe8ce521a75c4ea89a52a97c844fe245ee424fe",
-  "recommendation_count": 1,
+  "commit_sha": "d5c64a87fd35ed1c2673b408516302a9d1cb3d89",
+  "recommendation_count": 2,
   "signals": [
     {
-      "code": "2083",
-      "name": "شركة مرافق الكهرباء والمياه بالجبيل وينبع",
-      "entry": 46.18,
-      "stop": 43.07142881120954,
-      "target": 50.84285678318569,
-      "rsi": 53.35321031548858,
-      "date": "2026-11-18",
-      "shares": 3,
-      "value": 138.54,
-      "risk": 9.91478418738162,
-      "commitment": 138.844954248
+      "code": "2381",
+      "name": "شركة الحفر العربية",
+      "entry": 97.45,
+      "stop": 91.1642835344587,
+      "target": 106.87857469831195,
+      "rsi": 66.74055841728202,
+      "date": "2026-11-22",
+      "shares": 1,
+      "value": 97.45,
+      "risk": 6.700675432176865,
+      "commitment": 97.66450694000001
+    },
+    {
+      "code": "4084",
+      "name": "شركة دراية المالية",
+      "entry": 20.02,
+      "stop": 18.949999215262277,
+      "target": 21.625001177106583,
+      "rsi": 49.19356885486086,
+      "date": "2026-11-22",
+      "shares": 2,
+      "value": 40.04,
+      "risk": 2.311472134024484,
+      "commitment": 40.128136048
     }
   ]
 }
