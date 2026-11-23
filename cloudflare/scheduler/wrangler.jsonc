@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "saudi-agent-scheduler",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-23",
+  "triggers": {
+    "crons": ["35 13 * * 0-4"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SCHEDULER_STATE",
+        "class_name": "SchedulerState"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SchedulerState"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
+  }
+}

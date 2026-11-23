@@ -1,7 +1,9 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 
-from scripts.watchdog import choose_action, created_window, validated_run_list
+from scripts.watchdog import (
+    TZ, choose_action, created_window, validated_run_list, watchdog_window_open,
+)
 
 
 TODAY = date(2026, 11, 17)
@@ -21,6 +23,16 @@ def run(run_id, *, status="completed", conclusion="success", name="Daily signals
 
 
 class WatchdogDecisionTests(unittest.TestCase):
+    def test_watchdog_waits_until_same_day_recovery_time(self):
+        early = datetime(2026, 11, 17, 16, 29, tzinfo=TZ)
+        due = datetime(2026, 11, 17, 16, 30, tzinfo=TZ)
+        self.assertFalse(watchdog_window_open(early))
+        self.assertTrue(watchdog_window_open(due))
+
+    def test_watchdog_refuses_delayed_invocation_after_midnight(self):
+        after_midnight = datetime(2026, 11, 18, 0, 5, tzinfo=TZ)
+        self.assertFalse(watchdog_window_open(after_midnight))
+
     def test_api_created_filter_is_scoped_to_riyadh_calendar_day(self):
         self.assertEqual(
             created_window(TODAY),
