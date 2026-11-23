@@ -14,6 +14,17 @@ REPO = os.environ.get("GH_REPOSITORY")
 TOKEN = os.environ.get("GH_TOKEN")
 WORKFLOW = os.environ.get("SAUDI_AGENT_WATCHDOG_WORKFLOW", "daily.yml")
 TASK_LABEL = os.environ.get("SAUDI_AGENT_WATCHDOG_LABEL", "توصيات الإغلاق")
+WATCHDOG_NOT_BEFORE = (16, 30)
+
+
+def watchdog_window_open(now=None):
+    """Reject early or next-day delayed invocations; fallback is same-day only."""
+    local_now = now or datetime.now(TZ)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=TZ)
+    else:
+        local_now = local_now.astimezone(TZ)
+    return (local_now.hour, local_now.minute) >= WATCHDOG_NOT_BEFORE
 
 
 def request_json(url, method="GET", payload=None):
@@ -112,6 +123,13 @@ def validated_run_list(data):
 
 
 def main():
+    now = datetime.now(TZ)
+    if not watchdog_window_open(now):
+        print(
+            f"Watchdog skipped outside same-day recovery window: "
+            f"{now.isoformat()} (earliest 16:30 Asia/Riyadh)."
+        )
+        return
     if not REPO:
         raise RuntimeError("GH_REPOSITORY غير مضبوط.")
     today = datetime.now(TZ).date()
