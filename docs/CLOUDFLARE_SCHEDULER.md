@@ -6,7 +6,7 @@ Cloudflare Worker `saudi-agent-scheduler` is an external, idempotent trigger for
 
 ## Schedule
 
-- Cron: `35 13 * * 0-4` UTC (16:35 Asia/Riyadh, Sunday–Thursday).
+- Cron: `35 13 * * SUN-THU` UTC (16:35 Asia/Riyadh, Sunday–Thursday).
 - The existing GitHub watchdog schedule at 16:30 Riyadh is preserved as a first attempt.
 - Cloudflare dispatches `.github/workflows/schedule-watchdog.yml` five minutes later as an independent recovery trigger.
 - The Worker checks the Riyadh weekday and local time again. It refuses to dispatch outside 16:35–16:50 Riyadh, so a delayed invocation after midnight cannot start a stale recommendation run.
@@ -19,7 +19,6 @@ A SQLite-backed Durable Object stores one record per Riyadh calendar date. It us
 
 Set the Cloudflare Worker secret `GH_TOKEN`. Use a GitHub fine-grained personal access token restricted to this repository with:
 - Actions: Read and write
-- Contents: Read-only
 
 The token is used only to call GitHub's `workflow_dispatch` endpoint for `schedule-watchdog.yml`. Never put it in Git, Wrangler configuration, source code, or chat. Set it through the Cloudflare dashboard or `wrangler secret put GH_TOKEN`.
 
