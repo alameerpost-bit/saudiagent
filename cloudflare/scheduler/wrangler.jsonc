@@ -4,7 +4,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-11-23",
   "triggers": {
-    "crons": ["35 13 * * SUN-THU"]
+    "crons": ["45 7 * * SUN-THU", "35 13 * * SUN-THU"]
   },
   "durable_objects": {
     "bindings": [
