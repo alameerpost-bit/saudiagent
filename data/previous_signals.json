@@ -1,39 +1,26 @@
 {
   "schema_version": 2,
-  "session_date": "2026-11-22",
-  "generated_at": "2026-11-22T23:18:58.335609+03:00",
+  "session_date": "2026-11-24",
+  "generated_at": "2026-11-24T19:34:31.107225+03:00",
   "source": "daily_close_recommendations",
   "generation_status": "success",
-  "run_id": "45065694543",
+  "run_id": "45438621850",
   "run_attempt": 1,
-  "commit_sha": "d5c64a87fd35ed1c2673b408516302a9d1cb3d89",
-  "recommendation_count": 2,
+  "commit_sha": "a507066a6ab8ab9711a0c12e5d83de0000002334",
+  "recommendation_count": 1,
   "signals": [
     {
-      "code": "2381",
-      "name": "شركة الحفر العربية",
-      "entry": 97.45,
-      "stop": 91.1642835344587,
-      "target": 106.87857469831195,
-      "rsi": 66.74055841728202,
-      "date": "2026-11-22",
-      "shares": 1,
-      "value": 97.45,
-      "risk": 6.700675432176865,
-      "commitment": 97.66450694000001
-    },
-    {
-      "code": "4084",
-      "name": "شركة دراية المالية",
-      "entry": 20.02,
-      "stop": 18.949999215262277,
-      "target": 21.625001177106583,
-      "rsi": 49.19356885486086,
-      "date": "2026-11-22",
-      "shares": 2,
-      "value": 40.04,
-      "risk": 2.311472134024484,
-      "commitment": 40.128136048
+      "code": "1010",
+      "name": "بنك الرياض",
+      "entry": 20.3,
+      "stop": 19.69285741533552,
+      "target": 21.21071387699672,
+      "rsi": 65.0189973434904,
+      "date": "2026-11-24",
+      "shares": 9,
+      "value": 182.70000000000002,
+      "risk": 6.256148395943878,
+      "commitment": 183.10215924000002
     }
   ]
 }
